@@ -482,6 +482,17 @@ async function clickButtonByName(scope, regexes, timeoutMs = 20_000) {
   return false;
 }
 
+async function hasVisibleButtonByName(scope, regexes) {
+  for (const rx of regexes) {
+    const btn = scope.getByRole("button", { name: rx }).first();
+    if ((await btn.count()) === 0) continue;
+    const visible = await btn.isVisible().catch(() => false);
+    if (!visible) continue;
+    return true;
+  }
+  return false;
+}
+
 async function collectVisibleButtonLabels(page) {
   return page.evaluate(() => {
     const labels = [];
@@ -597,6 +608,27 @@ async function selectOptionLike(selectLocator, textNeedle) {
   return false;
 }
 
+
+async function countVisibleControls(scope) {
+  const controls = scope.locator("input, textarea, select, [role='combobox']");
+  const count = await controls.count();
+  let visibleCount = 0;
+  for (let i = 0; i < count; i += 1) {
+    const visible = await controls.nth(i).isVisible().catch(() => false);
+    if (visible) visibleCount += 1;
+  }
+  return visibleCount;
+}
+
+async function waitForVisibleControls(scope, timeoutMs = 9_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const visibleControls = await countVisibleControls(scope);
+    if (visibleControls > 0) return visibleControls;
+    await sleep(220);
+  }
+  return 0;
+}
 
 async function selectFromPicker(page, searchButtonRx, preferText = "", options = {}) {
   const { strictPrefer = false, triggerTimeoutMs = 22000, pickerTimeoutMs = 20000 } = options;
@@ -1313,21 +1345,87 @@ async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
   await operadorPage.getByRole("button", { name: /Nueva venta/i }).click();
   {
     const d = await activeDialog(operadorPage);
-    await selectFieldWithPickerFallback(operadorPage, d, {
-      fieldLabel: "comprador",
-      pickerRegexes: [/Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i],
-      labelRegexes: [/Comprador/i, /Cliente/i],
-      preferText: sim.maestros.comprador.nombre
-    });
-    await selectFieldWithPickerFallback(operadorPage, d, {
-      fieldLabel: "producto",
-      pickerRegexes: [/Buscar Producto/i, /Seleccionar Producto/i, /Producto/i],
-      labelRegexes: [/Producto/i],
-      preferText: ""
-    });
-    await fillByLabel(d, /Cantidad \(kg\)/i, ventaKg);
-    await d.getByRole("button", { name: /^Agregar$/i }).click();
-    await fillByLabel(d, /Observaciones/i, `Venta auto ${sim.id}`);
+    await waitForVisibleControls(d, 7_000);
+
+    const buyerPickerRegexes = [/Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i];
+    const buyerCandidates = [sim.maestros.comprador?.nombre, sim.maestros.cliente?.nombre].filter(Boolean);
+    let buyerSelected = false;
+    let buyerPickerError = null;
+    const hasBuyerPicker = await hasVisibleButtonByName(operadorPage, buyerPickerRegexes);
+    if (hasBuyerPicker) {
+      for (const candidate of buyerCandidates) {
+        try {
+          await selectFromPicker(operadorPage, buyerPickerRegexes, candidate, { strictPrefer: true });
+          buyerSelected = true;
+          break;
+        } catch (error) {
+          buyerPickerError = error;
+        }
+      }
+    }
+    if (!buyerSelected) {
+      buyerSelected = await tryFillByLabelValues(d, [/Comprador/i, /Cliente/i], buyerCandidates);
+    }
+    if (!buyerSelected) {
+      buyerSelected = await trySetByHints(d, ["comprador", "cliente"], buyerCandidates, false);
+    }
+    if (!buyerSelected) {
+      const visibleControls = await countVisibleControls(d);
+      if (visibleControls > 0) {
+        const fieldHints = await collectDialogFieldHints(d).catch(() => []);
+        throw new Error(
+          `No pude seleccionar comprador/cliente en Nueva venta. Picker=${buyerPickerError?.message || "sin detalle"} Campos visibles=${fieldHints.join(" || ")}`
+        );
+      }
+      console.log(`[${sim.id}] aviso: venta sin selector visible de comprador/cliente; continúo.`);
+    }
+
+    const productPickerRegexes = [/Buscar Producto/i, /Seleccionar Producto/i, /Producto/i];
+    let productSelected = false;
+    let productPickerError = null;
+    const hasProductPicker = await hasVisibleButtonByName(operadorPage, productPickerRegexes);
+    if (hasProductPicker) {
+      try {
+        await selectFromPicker(operadorPage, productPickerRegexes, "");
+        productSelected = true;
+      } catch (error) {
+        productPickerError = error;
+      }
+    }
+    if (!productSelected) {
+      productSelected = await trySetByHints(d, ["producto", "sku", "item"], [""], true);
+    }
+    if (!productSelected) {
+      const visibleControls = await countVisibleControls(d);
+      if (visibleControls > 0) {
+        const fieldHints = await collectDialogFieldHints(d).catch(() => []);
+        throw new Error(
+          `No pude seleccionar producto en Nueva venta. Picker=${productPickerError?.message || "sin detalle"} Campos visibles=${fieldHints.join(" || ")}`
+        );
+      }
+      console.log(`[${sim.id}] aviso: venta sin selector visible de producto; continúo.`);
+    }
+
+    try {
+      await fillByLabel(d, /Cantidad \(kg\)/i, ventaKg);
+    } catch {
+      const quantitySet = await trySetByHints(d, ["cantidad", "kg", "peso"], [ventaKg], false);
+      if (!quantitySet) {
+        const fieldHints = await collectDialogFieldHints(d).catch(() => []);
+        throw new Error(`No pude definir cantidad de venta. Campos visibles=${fieldHints.join(" || ")}`);
+      }
+    }
+
+    const addButton = d.getByRole("button", { name: /^Agregar$/i }).first();
+    if ((await addButton.count()) > 0) {
+      await addButton.click();
+    }
+
+    try {
+      await fillByLabel(d, /Observaciones/i, `Venta auto ${sim.id}`);
+    } catch {
+      await trySetByHints(d, ["observacion", "comentario", "nota"], [`Venta auto ${sim.id}`], false);
+    }
   }
   await submitModal(operadorPage, /Crear venta/i, false);
 
