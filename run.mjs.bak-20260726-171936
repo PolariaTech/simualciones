@@ -1,0 +1,1296 @@
+#!/usr/bin/env node
+/* eslint-disable no-console */
+import fs from "fs";
+import path from "path";
+import { performance } from "perf_hooks";
+import { fileURLToPath } from "url";
+import XLSX from "xlsx";
+import { chromium } from "playwright";
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const SCENARIO_PATH = path.join(ROOT, "scenarios", "polaria-simulaciones.json");
+const EVIDENCE_PATH = path.join(ROOT, "evidencia-entrega.png");
+
+const DEFAULT_BROWSER_PATHS = {
+  opera: "C:\\Program Files\\Opera GX\\opera.exe",
+  chrome: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  edge: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+};
+
+function parseArgs(argv) {
+  const out = {
+    headed: true,
+    frontUrl: "",
+    downloadsDir: "",
+    timeoutMs: 35_000
+  };
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (token === "--help") {
+      printHelp();
+      process.exit(0);
+    } else if (token === "--headed") {
+      out.headed = true;
+    } else if (token === "--headless") {
+      out.headed = false;
+    } else if (token === "--front-url") {
+      out.frontUrl = argv[++i] || "";
+    } else if (token === "--downloads") {
+      out.downloadsDir = argv[++i] || "";
+    } else if (token === "--timeout-ms") {
+      out.timeoutMs = Number.parseInt(argv[++i] || "", 10);
+    }
+  }
+  return out;
+}
+
+function printHelp() {
+  console.log(`
+Runner externo UI Polaria
+
+Uso:
+  node run.mjs --downloads "C:\\Users\\TU_USUARIO\\Downloads" [opciones]
+
+Opciones:
+  --front-url <url>      URL frontend (default: la del escenario)
+  --downloads <path>     Carpeta donde están Andino(1).xlsx, Mar_Azul(1).xlsx, Aves_Dorada(1).xlsx
+  --headed               Navegadores visibles (default)
+  --headless             Navegadores ocultos
+  --timeout-ms <n>       Timeout base por acción (default 35000)
+  --help                 Mostrar ayuda
+`);
+}
+
+function normalizePathFromFileUrl(p) {
+  if (process.platform === "win32") return p;
+  return p;
+}
+
+function readScenario() {
+  const raw = fs.readFileSync(SCENARIO_PATH, "utf8");
+  return JSON.parse(raw);
+}
+
+function ensureFile(filePath, label) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`No existe ${label}: ${filePath}`);
+  }
+}
+
+function parseCatalogMeta(excelPath) {
+  const workbook = XLSX.readFile(excelPath);
+  const firstSheet = workbook.SheetNames[0];
+  const rows = firstSheet
+    ? XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet], { defval: "" })
+    : [];
+  return { sheet: firstSheet || "(sin hoja)", rows: rows.length };
+}
+
+function ensureEvidenceImage() {
+  if (fs.existsSync(EVIDENCE_PATH)) return EVIDENCE_PATH;
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
+  fs.writeFileSync(EVIDENCE_PATH, Buffer.from(pngBase64, "base64"));
+  return EVIDENCE_PATH;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function rxContains(value) {
+  return new RegExp(escapeRegExp(value), "i");
+}
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function todayInput() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const setupUsersGate = {
+  chain: Promise.resolve()
+};
+
+const writeOpsGate = {
+  chain: Promise.resolve()
+};
+
+const catalogImportGate = {
+  chain: Promise.resolve()
+};
+
+const setupFlowGate = {
+  chain: Promise.resolve()
+};
+
+async function runInGate(gate, task) {
+  const previous = gate.chain;
+  let release;
+  gate.chain = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
+class Monitor {
+  constructor(sims) {
+    this.start = performance.now();
+    this.rows = new Map(
+      sims.map((sim) => [
+        sim.id,
+        { id: sim.id, nombre: sim.nombre, estado: "pendiente", paso: "-", ok: 0, total: 0, error: "" }
+      ])
+    );
+    this.ticker = null;
+  }
+
+  setTotal(id, total) {
+    const row = this.rows.get(id);
+    if (!row) return;
+    row.total = total;
+  }
+
+  begin(id, paso) {
+    const row = this.rows.get(id);
+    if (!row) return;
+    row.estado = "ejecutando";
+    row.paso = paso;
+    this.render();
+  }
+
+  done(id) {
+    const row = this.rows.get(id);
+    if (!row) return;
+    row.ok += 1;
+    this.render();
+  }
+
+  complete(id) {
+    const row = this.rows.get(id);
+    if (!row) return;
+    row.estado = "ok";
+    row.paso = "finalizado";
+    this.render();
+  }
+
+  fail(id, error) {
+    const row = this.rows.get(id);
+    if (!row) return;
+    row.estado = "error";
+    row.error = String(error?.message || error || "fallo");
+    this.render();
+  }
+
+  startLoop() {
+    if (this.ticker) return;
+    this.ticker = setInterval(() => this.render(), 1200);
+    this.render();
+  }
+
+  stopLoop() {
+    if (this.ticker) clearInterval(this.ticker);
+    this.ticker = null;
+    this.render();
+  }
+
+  render() {
+    const elapsed = ((performance.now() - this.start) / 1000).toFixed(1);
+    const lines = [];
+    lines.push("=== POLARIA UI RUNNER (TERCERO) ===");
+    lines.push(`Tiempo: ${elapsed}s`);
+    lines.push("");
+    lines.push("simulacion | estado     | progreso | paso actual                    | error");
+    lines.push("-----------+------------+----------+-------------------------------+-------------------------");
+    for (const row of this.rows.values()) {
+      const progress = `${row.ok}/${row.total || "?"}`;
+      lines.push(
+        `${row.id.padEnd(10, " ")} | ${row.estado.padEnd(10, " ")} | ${progress.padEnd(8, " ")} | ${row.paso.slice(0, 29).padEnd(29, " ")} | ${row.error.slice(0, 23)}`
+      );
+    }
+    process.stdout.write(`\x1Bc${lines.join("\n")}\n`);
+  }
+}
+
+class RolePages {
+  constructor(browser, frontUrl, timeoutMs) {
+    this.browser = browser;
+    this.frontUrl = frontUrl;
+    this.timeoutMs = timeoutMs;
+    this.map = new Map();
+  }
+
+  async get(key, email, password, codigoEmpresa = "") {
+    if (this.map.has(key)) return this.map.get(key).page;
+    const context = await this.browser.newContext({
+      viewport: { width: 1536, height: 920 }
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(this.timeoutMs);
+    await login(page, this.frontUrl, email, password, codigoEmpresa, this.timeoutMs);
+    this.map.set(key, { context, page });
+    return page;
+  }
+
+  async closeAll() {
+    const entries = [...this.map.values()];
+    for (const entry of entries) {
+      await entry.context.close().catch(() => {});
+    }
+    this.map.clear();
+  }
+}
+
+async function activeDialog(page, timeoutMs = 12_000) {
+  const dialog = page.locator('[role="dialog"]').last();
+  await dialog.waitFor({ state: "visible", timeout: timeoutMs });
+  return dialog;
+}
+
+async function clickButtonByName(scope, regexes, timeoutMs = 20_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    for (const rx of regexes) {
+      const btn = scope.getByRole("button", { name: rx }).first();
+      if ((await btn.count()) === 0) continue;
+      const visible = await btn.isVisible().catch(() => false);
+      if (!visible) continue;
+      const disabled = await btn.isDisabled().catch(() => false);
+      if (disabled) continue;
+      await btn.click();
+      return true;
+    }
+    await sleep(220);
+  }
+  return false;
+}
+
+async function collectVisibleButtonLabels(page) {
+  return page.evaluate(() => {
+    const labels = [];
+    const nodes = Array.from(document.querySelectorAll("button"));
+    for (const node of nodes) {
+      const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      const style = window.getComputedStyle(node);
+      if (style.visibility === "hidden" || style.display === "none") continue;
+      labels.push(text);
+    }
+    return labels.slice(0, 20);
+  });
+}
+
+async function openCreateModal(page) {
+  const ok = await clickButtonByName(
+    page,
+    [
+      /^Agregar$/i,
+      /^Nuevo proveedor$/i,
+      /^Nuevo cliente$/i,
+      /^Nuevo comprador$/i,
+      /^Nuevo cami[oó]n$/i,
+      /^Nuevo producto$/i,
+      /^Nueva solicitud$/i,
+      /^Nueva orden$/i,
+      /^Nueva venta$/i,
+      /Nueva/i,
+      /Nuevo/i,
+      /Crear/i,
+      /Agregar/i
+    ],
+    28_000
+  );
+  if (ok) return;
+  const labels = await collectVisibleButtonLabels(page);
+  throw new Error(
+    `No encontré botón para abrir modal de creación. URL=${page.url()} Botones visibles=${labels.join(" | ")}`
+  );
+}
+
+async function fillByLabel(scope, labelRx, value) {
+  const locator = scope.getByLabel(labelRx).first();
+  if ((await locator.count()) === 0) {
+    throw new Error(`No encontré campo ${labelRx}`);
+  }
+
+  const valueStr = String(value);
+  const tag = await locator
+    .evaluate((el) => el.tagName.toLowerCase())
+    .catch(() => "");
+
+  // Caso normal: input/textarea
+  if (tag === "input" || tag === "textarea") {
+    await locator.fill(valueStr);
+    return;
+  }
+
+  // Caso PhoneInput: el label puede resolver al select de país
+  if (tag === "select") {
+    const telCandidates = [
+      scope.locator("input[type='tel']").first(),
+      scope.locator("input[autocomplete='tel']").first(),
+      scope.locator("input[id*='telefono']").first(),
+      scope.locator("input[id*='phone']").first(),
+    ];
+
+    for (const candidate of telCandidates) {
+      if ((await candidate.count()) === 0) continue;
+      const visible = await candidate.isVisible().catch(() => false);
+      if (!visible) continue;
+      await candidate.fill(valueStr);
+      return;
+    }
+
+    // Si realmente era un select normal, intentar selección por texto
+    const selected = await selectOptionLike(locator, valueStr);
+    if (selected) return;
+
+    throw new Error(
+      `El campo ${labelRx} resolvió a <select> y no encontré input telefónico asociado.`
+    );
+  }
+
+  throw new Error(
+    `El campo ${labelRx} no es editable con fill(). tag=${tag || "desconocido"}`
+  );
+}
+
+async function selectOptionLike(selectLocator, textNeedle) {
+  const options = selectLocator.locator("option");
+  const count = await options.count();
+  for (let i = 0; i < count; i += 1) {
+    const option = options.nth(i);
+    const txt = ((await option.textContent()) || "").toLowerCase();
+    if (txt.includes(textNeedle.toLowerCase())) {
+      const value = await option.getAttribute("value");
+      if (value) {
+        await selectLocator.selectOption(value);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+async function selectFromPicker(page, searchButtonRx, preferText = "", options = {}) {
+  const { strictPrefer = false } = options;
+  const exists = await clickButtonByName(page, [searchButtonRx], 18_000);
+  if (!exists) {
+    throw new Error(`No encontré botón de picker ${searchButtonRx}`);
+  }
+  const picker = await activeDialog(page, 12_000);
+
+  const clickFirstVisible = async (locator) => {
+    const count = await locator.count();
+    for (let i = 0; i < count; i += 1) {
+      const node = locator.nth(i);
+      const visible = await node.isVisible().catch(() => false);
+      if (!visible) continue;
+      await node.click();
+      return true;
+    }
+    return false;
+  };
+
+  if (preferText) {
+    const searchInput = picker.getByRole("searchbox", { name: /Buscar/i }).first();
+    if ((await searchInput.count()) > 0) {
+      await searchInput.fill(String(preferText));
+      await sleep(180);
+    }
+
+    const byRoleName = picker.getByRole("button", { name: rxContains(preferText) });
+    if (await clickFirstVisible(byRoleName)) return;
+
+    const byRowText = picker.locator('tr[role="button"]', {
+      hasText: new RegExp(escapeRegExp(preferText), "i")
+    });
+    if (await clickFirstVisible(byRowText)) return;
+
+    const rows = picker.locator('tr[role="button"]');
+    const rowsCount = await rows.count();
+    const needle = normalizeText(preferText);
+    for (let i = 0; i < rowsCount; i += 1) {
+      const row = rows.nth(i);
+      const [aria, txt] = await Promise.all([
+        row.getAttribute("aria-label").catch(() => ""),
+        row.textContent().catch(() => "")
+      ]);
+      const haystack = normalizeText(`${aria || ""} ${txt || ""}`);
+      if (haystack.includes(needle)) {
+        await row.click();
+        return;
+      }
+    }
+
+    if (strictPrefer) {
+      throw new Error(`No encontré opción "${preferText}" en picker ${searchButtonRx}`);
+    }
+  }
+
+  const row = picker.locator('tr[role="button"]').first();
+  if ((await row.count()) > 0) {
+    await row.click();
+    return;
+  }
+
+  const slotOrCard = picker.getByRole("button", { name: /Seleccionar/i }).first();
+  if ((await slotOrCard.count()) > 0) {
+    await slotOrCard.click();
+    return;
+  }
+
+  throw new Error("No hay filas ni tarjetas seleccionables en el picker.");
+}
+
+async function submitModal(page, submitRx, allowDuplicate = true) {
+  return runInGate(writeOpsGate, async () => {
+    const dialog = await activeDialog(page, 15_000);
+    const submit = dialog.getByRole("button", { name: submitRx }).first();
+    if ((await submit.count()) === 0) throw new Error(`No encontré botón submit ${submitRx}`);
+    const throttleRx = /(ThrottlerException|Too Many Requests|429|demasiadas solicitudes)/i;
+    const maxAttempts = 10;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const disabled = await submit.isDisabled().catch(() => false);
+      if (disabled) {
+        await sleep(300);
+      } else {
+        await submit.click();
+      }
+
+      await sleep(450);
+      const dialogAlert = dialog.getByRole("alert").first();
+      const pageAlert = page.getByRole("alert").first();
+      const dialogAlertText =
+        (await dialogAlert.count()) > 0 ? ((await dialogAlert.textContent()) || "").trim() : "";
+      const pageAlertText =
+        (await pageAlert.count()) > 0 ? ((await pageAlert.textContent()) || "").trim() : "";
+      const alertTextNow = `${dialogAlertText} ${pageAlertText}`.trim();
+
+      if (allowDuplicate && /(existe|duplic|ya est[aá]|ya fue)/i.test(alertTextNow)) {
+        await clickButtonByName(dialog, [/Cerrar/i, /Cancelar/i]);
+        await dialog.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+        return;
+      }
+
+      if (throttleRx.test(alertTextNow) && attempt < maxAttempts) {
+        const backoffMs = Math.min(30_000, 1_500 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 1400);
+        await sleep(backoffMs);
+        continue;
+      }
+
+      try {
+        await dialog.waitFor({ state: "hidden", timeout: 16_000 });
+        return;
+      } catch {
+        const dialogAlert2 = dialog.getByRole("alert").first();
+        const pageAlert2 = page.getByRole("alert").first();
+        const dialogAlertText2 =
+          (await dialogAlert2.count()) > 0 ? ((await dialogAlert2.textContent()) || "").trim() : "";
+        const pageAlertText2 =
+          (await pageAlert2.count()) > 0 ? ((await pageAlert2.textContent()) || "").trim() : "";
+        const alertText = `${dialogAlertText2} ${pageAlertText2}`.trim();
+
+        if (allowDuplicate && /(existe|duplic|ya est[aá]|ya fue)/i.test(alertText)) {
+          await clickButtonByName(dialog, [/Cerrar/i, /Cancelar/i]);
+          await dialog.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+          return;
+        }
+
+        if (throttleRx.test(alertText) && attempt < maxAttempts) {
+          const backoffMs = Math.min(30_000, 1_500 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 1400);
+          await sleep(backoffMs);
+          continue;
+        }
+
+        throw new Error(
+          alertText || `El modal no cerró después de enviar (intento ${attempt}/${maxAttempts}).`
+        );
+      }
+    }
+
+    throw new Error(`No se pudo enviar el modal tras ${maxAttempts} intentos.`);
+  });
+}
+
+async function login(page, frontUrl, email, password, codigoEmpresa = "", timeoutMs = 30_000) {
+  const maxAttempts = 3;
+  const redirectTimeout = Math.max(timeoutMs, 90_000);
+
+  async function fillReactInput(locator, value) {
+    await locator.waitFor({ state: "visible", timeout: timeoutMs });
+    await locator.click({ clickCount: 3 }).catch(() => {});
+    await locator.fill("").catch(() => {});
+    await locator.type(String(value), { delay: 20 });
+
+    // Fuerza evento input/change para React
+    await locator.evaluate((el, v) => {
+      if ("value" in el) {
+        el.value = v;
+      }
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+    }, String(value));
+  }
+
+  async function readAlertText() {
+    const alert = page.getByRole("alert").first();
+    if ((await alert.count()) === 0) return "";
+    return ((await alert.textContent()) || "").trim();
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await page.goto(`${frontUrl}/login`, { waitUntil: "domcontentloaded" });
+
+      const currentPath = getPathnameFromUrl(page.url());
+      if (currentPath.startsWith("/configurador") || currentPath.startsWith("/dashboard")) {
+        return;
+      }
+
+      const emailInput = page.locator("#identificador").first();
+      await fillReactInput(emailInput, email);
+
+      // Intento submit por Enter primero
+      await emailInput.press("Enter").catch(() => {});
+      await page.waitForTimeout(350);
+
+      const companySelect = page.locator("#codigoEmpresa").first();
+      const continueBtn = page.getByRole("button", { name: /Continuar/i }).first();
+
+      // Si sigue en login y no avanzó, click en Continuar
+      if (getPathnameFromUrl(page.url()).startsWith("/login")) {
+        const hasContinue = (await continueBtn.count()) > 0;
+        if (hasContinue) {
+          const disabled = await continueBtn.isDisabled().catch(() => false);
+          if (!disabled) {
+            await continueBtn.click();
+          }
+        }
+      }
+
+      const companyVisible = await companySelect.isVisible().catch(() => false);
+      if (companyVisible) {
+        if (codigoEmpresa) {
+          await companySelect.selectOption({ value: codigoEmpresa }).catch(async () => {
+            await companySelect.selectOption({ label: codigoEmpresa });
+          });
+        } else {
+          // Si no vino código, solo autoselecciona si hay una única opción válida
+          const options = companySelect.locator("option");
+          const count = await options.count();
+          const validValues = [];
+          for (let i = 0; i < count; i += 1) {
+            const val = (await options.nth(i).getAttribute("value")) || "";
+            if (val.trim()) validValues.push(val);
+          }
+          if (validValues.length === 1) {
+            await companySelect.selectOption({ value: validValues[0] });
+          } else {
+            throw new Error("Login requiere selección de empresa y no se pudo resolver automáticamente.");
+          }
+        }
+
+        await page.waitForTimeout(250);
+        const disabled = await continueBtn.isDisabled().catch(() => false);
+        if (!disabled) {
+          await continueBtn.click();
+        } else {
+          await companySelect.press("Enter").catch(() => {});
+        }
+      }
+
+      const passwordInput = page.locator("#password").first();
+      await fillReactInput(passwordInput, password);
+
+      // Submit por Enter + fallback click
+      await passwordInput.press("Enter").catch(() => {});
+      await page.waitForTimeout(300);
+
+      if (getPathnameFromUrl(page.url()).startsWith("/login")) {
+        const loginBtn = page.getByRole("button", { name: /Iniciar sesi[oó]n/i }).first();
+        if ((await loginBtn.count()) > 0) {
+          const disabled = await loginBtn.isDisabled().catch(() => false);
+          if (!disabled) await loginBtn.click();
+        }
+      }
+
+      await page.waitForURL(/\/(dashboard|configurador)/, { timeout: redirectTimeout });
+      return;
+    } catch (error) {
+      if (attempt === maxAttempts) {
+        const alertText = await readAlertText();
+        const url = page.url();
+        throw new Error(
+          `Falló login (${email}) tras ${maxAttempts} intentos. URL=${url}${alertText ? ` | alert=${alertText}` : ""} | causa=${error?.message || error}`
+        );
+      }
+
+      // Limpieza/reintento
+      await page.context().clearCookies().catch(() => {});
+      await page.goto("about:blank").catch(() => {});
+      await page.waitForTimeout(1200 * attempt);
+    }
+  }
+}
+
+function getPathnameFromUrl(url) {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+}
+
+async function waitForPathname(page, expectedRoute, timeoutMs = 30_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const pathname = getPathnameFromUrl(page.url());
+    if (pathname.startsWith(expectedRoute)) return;
+
+    if (expectedRoute.startsWith("/configurador") && pathname.startsWith("/dashboard")) {
+      throw new Error(
+        `Se esperaba ruta de configurador (${expectedRoute}), pero se llegó a ${pathname}.`
+      );
+    }
+
+    if (pathname.startsWith("/login")) {
+      throw new Error("Sesión no válida o expirada: redirigió a /login.");
+    }
+
+    await sleep(180);
+  }
+
+  throw new Error(
+    `No se alcanzó la ruta esperada ${expectedRoute}. Ruta actual: ${getPathnameFromUrl(page.url())}`
+  );
+}
+
+async function go(page, frontUrl, route) {
+  await page.goto(`${frontUrl}${route}`, { waitUntil: "domcontentloaded" });
+  await waitForPathname(page, route, 30_000);
+}
+async function setupCore(configPage, sim, frontUrl) {
+  await go(configPage, frontUrl, "/configurador/creacion/empresas");
+  await openCreateModal(configPage);
+  {
+    const dialog = await activeDialog(configPage);
+    await fillByLabel(dialog, /Raz[oó]n social/i, sim.setup.empresa.razonSocial);
+    await fillByLabel(dialog, /Tel[eé]fono/i, sim.setup.empresa.telefono);
+  }
+  await submitModal(configPage, /Crear/i, true);
+    await sleep(8500 + Math.floor(Math.random() * 2500));
+
+  await go(configPage, frontUrl, "/configurador/creacion/cuentas");
+  await openCreateModal(configPage);
+  {
+    const dialog = await activeDialog(configPage);
+    await selectFromPicker(configPage, /Buscar Empresa/i, sim.setup.empresa.razonSocial);
+    await fillByLabel(dialog, /^Nombre$/i, sim.setup.cuenta.nombre);
+  }
+  await submitModal(configPage, /Crear/i, true);
+    await sleep(8500 + Math.floor(Math.random() * 2500));
+
+  await go(configPage, frontUrl, "/configurador/creacion/bodega-interna");
+  await openCreateModal(configPage);
+  {
+    const dialog = await activeDialog(configPage);
+    await selectFromPicker(configPage, /Buscar Cuenta destino/i, sim.setup.cuenta.nombre);
+    await fillByLabel(dialog, /^Nombre$/i, sim.setup.bodega.nombre);
+    await fillByLabel(dialog, /Capacidad/i, sim.setup.bodega.capacidad);
+  }
+  await submitModal(configPage, /Crear/i, true);
+    await sleep(8500 + Math.floor(Math.random() * 2500));
+}
+
+async function setupUsers(configPage, sim, frontUrl) {
+  const users = [
+    { key: "adminCuenta", role: "administrador_cuenta", roleLabel: "Administrador de cuenta", assign: "cuenta" },
+    { key: "operadorCuenta", role: "operador_cuenta", roleLabel: "Operador de cuenta", assign: "cuenta" },
+    { key: "adminBodega", role: "administrador_bodega", roleLabel: "Administrador de bodega", assign: "bodega" },
+    { key: "jefeBodega", role: "jefe_bodega", roleLabel: "Jefe de bodega", assign: "bodega" },
+    { key: "custodio", role: "custodio", roleLabel: "Custodio", assign: "bodega" },
+    { key: "operario", role: "operario", roleLabel: "Operario", assign: "bodega" },
+    { key: "procesador", role: "procesador", roleLabel: "Procesador", assign: "bodega" },
+    { key: "transportista", role: "transportista", roleLabel: "Transportista", assign: "bodega" }
+  ];
+
+  await go(configPage, frontUrl, "/configurador/asignacion/usuarios");
+
+  for (const item of users) {
+    const u = sim.usuarios[item.key];
+    await openCreateModal(configPage);
+    const dialog = await activeDialog(configPage);
+
+    await fillByLabel(dialog, /^Nombre$/i, u.nombre);
+
+    // Selección estricta de rol: nunca fallback a primera fila
+    await selectFromPicker(configPage, /Buscar Rol/i, item.roleLabel, { strictPrefer: true });
+
+    // Validación defensiva del rol realmente seleccionado
+    const rolSeleccionado = await dialog.locator("#usuario-rol").inputValue().catch(() => "");
+    const roleOk =
+      normalizeText(rolSeleccionado).includes(normalizeText(item.role)) ||
+      normalizeText(rolSeleccionado).includes(normalizeText(item.roleLabel));
+
+    if (!roleOk) {
+      throw new Error(
+        `Rol incorrecto para ${u.email}. Esperado=${item.role} (${item.roleLabel}) | seleccionado="${rolSeleccionado}"`
+      );
+    }
+
+    const asignado = dialog.locator("#usuario-asignado");
+    if ((await asignado.count()) > 0) {
+      const needle = item.assign === "cuenta" ? sim.setup.cuenta.nombre : sim.setup.bodega.nombre;
+      const selected = await selectOptionLike(asignado, needle);
+      if (!selected) {
+        throw new Error(`No pude seleccionar "${needle}" en Asignado para ${u.email}`);
+      }
+    }
+
+    await fillByLabel(dialog, /Correo/i, u.email);
+    await fillByLabel(dialog, /^Clave$/i, sim.passwordUnica);
+    await submitModal(configPage, /Crear/i, true);
+    await sleep(8500 + Math.floor(Math.random() * 2500));
+  }
+}
+
+async function setupMastersAndCatalog(adminPage, sim, frontUrl, excelPath) {
+  // Proveedor
+  await go(adminPage, frontUrl, "/dashboard/administracion/asignacion-creacion/proveedores");
+  await openCreateModal(adminPage);
+  {
+    const d = await activeDialog(adminPage);
+    await fillByLabel(d, /^Proveedor$/i, sim.maestros.proveedor.nombre);
+    await fillByLabel(d, /^Nombre$/i, sim.maestros.proveedor.contacto);
+    await fillByLabel(d, /Tel[eé]fono/i, sim.maestros.proveedor.telefono);
+    await fillByLabel(d, /Email/i, sim.maestros.proveedor.email);
+  }
+  await submitModal(adminPage, /Crear/i, true);
+
+  // Cliente
+  await go(adminPage, frontUrl, "/dashboard/administracion/asignacion-creacion/clientes");
+  await openCreateModal(adminPage);
+  {
+    const d = await activeDialog(adminPage);
+    await fillByLabel(d, /^Nombre$/i, sim.maestros.cliente.nombre);
+    await fillByLabel(d, /^NIT$/i, sim.maestros.cliente.nit);
+    await fillByLabel(d, /Tel[eé]fono/i, sim.maestros.cliente.telefono);
+  }
+  await submitModal(adminPage, /Crear/i, true);
+
+  // Comprador
+  await go(adminPage, frontUrl, "/dashboard/administracion/asignacion-creacion/compradores");
+  await openCreateModal(adminPage);
+  {
+    const d = await activeDialog(adminPage);
+    await fillByLabel(d, /Nombre del comprador/i, sim.maestros.comprador.nombre);
+    await fillByLabel(d, /Tel[eé]fono/i, sim.maestros.comprador.telefono);
+  }
+  await submitModal(adminPage, /Crear/i, true);
+
+  // Camión
+  await go(adminPage, frontUrl, "/dashboard/administracion/asignacion-creacion/camiones");
+  await openCreateModal(adminPage);
+  {
+    const d = await activeDialog(adminPage);
+    await fillByLabel(d, /Placa/i, sim.maestros.camion.placa);
+    await selectFromPicker(adminPage, /Buscar Marca/i, "");
+    await selectFromPicker(adminPage, /Buscar Modelo/i, "");
+    await fillByLabel(d, /Peso m[aá]x/i, sim.maestros.camion.capacidadKg);
+    await fillByLabel(d, /Volumen/i, sim.maestros.camion.capacidadM3);
+    await fillByLabel(d, /Cap\. pallets/i, sim.maestros.camion.capacidadPallets);
+  }
+  await submitModal(adminPage, /Crear/i, true);
+
+  // Importar catálogo Excel
+  await go(adminPage, frontUrl, "/dashboard/administracion/catalogo");
+  await adminPage.getByRole("button", { name: /Importar Excel/i }).click();
+  const fileInput = adminPage.locator('input[type="file"]').first();
+  await fileInput.setInputFiles(excelPath);
+  await sleep(2500);
+}
+
+async function createAndEmitPurchaseOrder(operadorPage, adminPage, sim, frontUrl, compraKg) {
+  // Crear SOL
+  await go(operadorPage, frontUrl, "/dashboard/compras");
+  await operadorPage.getByRole("button", { name: /Nueva solicitud/i }).click();
+  {
+    const d = await activeDialog(operadorPage);
+    await selectFromPicker(operadorPage, /Buscar Proveedor/i, sim.maestros.proveedor.nombre);
+    await selectFromPicker(operadorPage, /Buscar Producto/i, "");
+    await fillByLabel(d, /Peso \(kg\)/i, compraKg);
+    await d.getByRole("button", { name: /^Agregar$/i }).click();
+  }
+  await submitModal(operadorPage, /Guardar solicitud/i, false);
+
+  // Enviar aprobación
+  await go(operadorPage, frontUrl, "/dashboard/compras");
+  await operadorPage.locator("table tbody tr").first().click();
+  {
+    const d = await activeDialog(operadorPage);
+    await d.getByRole("button", { name: /Enviar aprobaci[oó]n/i }).click();
+    await d.waitFor({ state: "hidden", timeout: 15_000 });
+  }
+
+  // Aprobar
+  await go(adminPage, frontUrl, "/dashboard/compras");
+  await adminPage.locator("table tbody tr").first().click();
+  {
+    const d = await activeDialog(adminPage);
+    await d.getByRole("button", { name: /^Aprobar$/i }).click();
+    await d.waitFor({ state: "hidden", timeout: 15_000 });
+  }
+
+  // Convertir
+  await adminPage.locator("table tbody tr").first().click();
+  {
+    const d = await activeDialog(adminPage);
+    await d.getByRole("button", { name: /Convertir a OC/i }).click();
+    await d.waitFor({ state: "hidden", timeout: 15_000 });
+  }
+
+  // Emitir OC con destino
+  await adminPage.getByRole("button", { name: /[ÓO]rdenes/i }).click();
+  await adminPage.locator("table tbody tr").first().click();
+  {
+    const d = await activeDialog(adminPage);
+    const date = d.locator("#orden-fecha-entrega");
+    if ((await date.count()) > 0) await date.fill(todayInput());
+    const tipo = d.locator("#orden-destino-tipo");
+    if ((await tipo.count()) > 0) await selectOptionLike(tipo, "interna");
+    const bodega = d.locator("#orden-destino-bodega");
+    if ((await bodega.count()) > 0) {
+      await selectOptionLike(bodega, sim.setup.bodega.nombre);
+    }
+    await sleep(900);
+    await d.getByRole("button", { name: /Emitir orden/i }).click();
+    await d.waitFor({ state: "hidden", timeout: 20_000 });
+  }
+}
+
+async function receiveOrder(custodioPage, sim, frontUrl, tempC, pesoKg) {
+  await go(custodioPage, frontUrl, "/dashboard/custodio/ingreso");
+  await selectFromPicker(custodioPage, /Buscar Orden de compra/i, "");
+  await sleep(800);
+
+  const tempFields = custodioPage.getByLabel(/Temperatura \([°º]C\)/i);
+  const tempCount = await tempFields.count();
+  for (let i = 0; i < tempCount; i += 1) {
+    await tempFields.nth(i).fill(String(tempC));
+  }
+  const pesoFields = custodioPage.getByLabel(/Peso recibido \(kg\)/i);
+  const pesoCount = await pesoFields.count();
+  for (let i = 0; i < pesoCount; i += 1) {
+    await pesoFields.nth(i).fill(String(pesoKg));
+  }
+  await custodioPage.getByRole("button", { name: /Registrar ingreso/i }).first().click();
+  await sleep(2400);
+}
+
+async function createIngresoAndCompleteTask(jefePage, operarioPage, sim, frontUrl) {
+  await go(jefePage, frontUrl, "/dashboard/jefe-bodega/estado-bodega");
+  await jefePage.getByRole("button", { name: /^Ingresos$/i }).click();
+  await activeDialog(jefePage);
+  await selectFromPicker(jefePage, /Buscar Producto en ingreso/i, "");
+  await selectFromPicker(jefePage, /Buscar Posici[oó]n en bodega/i, "");
+  await selectFromPicker(jefePage, /Buscar Operario/i, sim.usuarios.operario.nombre);
+  await submitModal(jefePage, /Crear ingreso/i, false);
+
+  await go(operarioPage, frontUrl, "/dashboard/operario/operacion");
+  for (let i = 0; i < 8; i += 1) {
+    const task = operarioPage.locator('button:has-text("ID de tarea")').first();
+    if ((await task.count()) === 0) break;
+    await task.click();
+    await sleep(1800);
+  }
+}
+
+async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
+  await go(operadorPage, frontUrl, "/dashboard/ventas/ordenes");
+  await operadorPage.getByRole("button", { name: /Nueva venta/i }).click();
+  {
+    const d = await activeDialog(operadorPage);
+    await selectFromPicker(operadorPage, /Buscar Comprador/i, sim.maestros.comprador.nombre);
+    await selectFromPicker(operadorPage, /Buscar Producto/i, "");
+    await fillByLabel(d, /Cantidad \(kg\)/i, ventaKg);
+    await d.getByRole("button", { name: /^Agregar$/i }).click();
+    await fillByLabel(d, /Observaciones/i, `Venta auto ${sim.id}`);
+  }
+  await submitModal(operadorPage, /Crear venta/i, false);
+
+  await operadorPage.locator("table tbody tr").first().click();
+  {
+    const d = await activeDialog(operadorPage);
+    const emitir = d.getByRole("button", { name: /Emitir venta/i });
+    if ((await emitir.count()) > 0) {
+      await emitir.first().click();
+      await sleep(2000);
+    }
+  }
+}
+
+async function createSalidaAndCompleteTask(jefePage, operarioPage, sim, frontUrl) {
+  await go(jefePage, frontUrl, "/dashboard/jefe-bodega/estado-bodega");
+  await jefePage.getByRole("button", { name: /Crear Salida/i }).click();
+  await activeDialog(jefePage);
+  await selectFromPicker(jefePage, /Buscar Orden de venta/i, "");
+  await selectFromPicker(jefePage, /Buscar Destino/i, "");
+  await selectFromPicker(jefePage, /Buscar Operario/i, sim.usuarios.operario.nombre);
+  await submitModal(jefePage, /Crear salida/i, false);
+
+  await go(operarioPage, frontUrl, "/dashboard/operario/operacion");
+  for (let i = 0; i < 8; i += 1) {
+    const task = operarioPage.locator('button:has-text("ID de tarea")').first();
+    if ((await task.count()) === 0) break;
+    await task.click();
+    await sleep(1800);
+  }
+}
+
+async function createPaquete(custodioPage, sim, frontUrl) {
+  await go(custodioPage, frontUrl, "/dashboard/custodio/ingreso");
+  await selectFromPicker(custodioPage, /Buscar Ventas para el paquete/i, "");
+  await custodioPage.getByRole("button", { name: /Armar paquete de despacho/i }).click();
+  await sleep(900);
+  await selectFromPicker(custodioPage, /Buscar Cami[oó]n asignado/i, sim.maestros.camion.placa);
+  await custodioPage.getByRole("button", { name: /Enviar paquete al transporte/i }).click();
+  await sleep(2400);
+}
+
+async function drawSignature(modal, page) {
+  const canvas = modal.locator("canvas").first();
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("No se encontró canvas de firma.");
+  await page.mouse.move(box.x + 24, box.y + 30);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 120, box.y + 72);
+  await page.mouse.move(box.x + 226, box.y + 54);
+  await page.mouse.up();
+}
+
+async function registerDelivery(transportPage, sim, frontUrl, evidencePath, conforme, motivoNoConforme = "") {
+  await go(transportPage, frontUrl, "/dashboard/transporte");
+  await transportPage.getByRole("button", { name: /Realizar entrega/i }).first().click();
+  const modal = await activeDialog(transportPage, 15_000);
+
+  const checks = modal.locator('input[type="checkbox"]');
+  const checksCount = await checks.count();
+  for (let i = 0; i < checksCount; i += 1) {
+    await checks.nth(i).check();
+  }
+  await modal.getByRole("button", { name: /Siguiente/i }).click();
+
+  await modal.locator('input[type="file"]').setInputFiles(evidencePath);
+  await modal.getByRole("button", { name: /Siguiente/i }).click();
+
+  await drawSignature(modal, transportPage);
+  await modal.getByRole("button", { name: /Siguiente/i }).click();
+
+  if (conforme) {
+    await modal.getByRole("button", { name: /S[ií], conforme/i }).click();
+  } else {
+    await modal.getByRole("button", { name: /No conforme/i }).click();
+    await modal
+      .getByPlaceholder(/Describ[ií] la incidencia/i)
+      .fill(motivoNoConforme || "Cadena de frio interrumpida en ruta");
+  }
+
+  await modal.getByRole("button", { name: /Cerrar entrega/i }).click();
+  await modal.waitFor({ state: "hidden", timeout: 60_000 });
+}
+
+async function runCycleA(sim, pages, frontUrl, evidencePath) {
+  await createAndEmitPurchaseOrder(
+    await pages.get("operador", sim.usuarios.operadorCuenta.email, sim.passwordUnica),
+    await pages.get("admin", sim.usuarios.adminCuenta.email, sim.passwordUnica),
+    sim,
+    frontUrl,
+    sim.flujo.compraKg
+  );
+  await receiveOrder(
+    await pages.get("custodio", sim.usuarios.custodio.email, sim.passwordUnica),
+    sim,
+    frontUrl,
+    sim.flujo.recepcionTempC,
+    sim.flujo.recepcionKgA
+  );
+  await createIngresoAndCompleteTask(
+    await pages.get("jefe", sim.usuarios.jefeBodega.email, sim.passwordUnica),
+    await pages.get("operario", sim.usuarios.operario.email, sim.passwordUnica),
+    sim,
+    frontUrl
+  );
+  await createAndEmitSale(
+    await pages.get("operador", sim.usuarios.operadorCuenta.email, sim.passwordUnica),
+    sim,
+    frontUrl,
+    sim.flujo.ventaKg
+  );
+  await createSalidaAndCompleteTask(
+    await pages.get("jefe", sim.usuarios.jefeBodega.email, sim.passwordUnica),
+    await pages.get("operario", sim.usuarios.operario.email, sim.passwordUnica),
+    sim,
+    frontUrl
+  );
+  await createPaquete(
+    await pages.get("custodio", sim.usuarios.custodio.email, sim.passwordUnica),
+    sim,
+    frontUrl
+  );
+  await registerDelivery(
+    await pages.get("transportista", sim.usuarios.transportista.email, sim.passwordUnica),
+    sim,
+    frontUrl,
+    evidencePath,
+    true
+  );
+}
+
+async function runCycleB(sim, pages, frontUrl, evidencePath) {
+  if (sim.flujo.cicloB === "recepcion_diferencia") {
+    await createAndEmitPurchaseOrder(
+      await pages.get("operador", sim.usuarios.operadorCuenta.email, sim.passwordUnica),
+      await pages.get("admin", sim.usuarios.adminCuenta.email, sim.passwordUnica),
+      sim,
+      frontUrl,
+      sim.flujo.compraKg
+    );
+    await receiveOrder(
+      await pages.get("custodio", sim.usuarios.custodio.email, sim.passwordUnica),
+      sim,
+      frontUrl,
+      sim.flujo.recepcionTempC,
+      sim.flujo.recepcionKgB
+    );
+    return;
+  }
+
+  if (sim.flujo.cicloB === "entrega_no_conforme") {
+    await createAndEmitPurchaseOrder(
+      await pages.get("operador", sim.usuarios.operadorCuenta.email, sim.passwordUnica),
+      await pages.get("admin", sim.usuarios.adminCuenta.email, sim.passwordUnica),
+      sim,
+      frontUrl,
+      sim.flujo.compraKg
+    );
+    await receiveOrder(
+      await pages.get("custodio", sim.usuarios.custodio.email, sim.passwordUnica),
+      sim,
+      frontUrl,
+      sim.flujo.recepcionTempC,
+      sim.flujo.recepcionKgB
+    );
+    await createIngresoAndCompleteTask(
+      await pages.get("jefe", sim.usuarios.jefeBodega.email, sim.passwordUnica),
+      await pages.get("operario", sim.usuarios.operario.email, sim.passwordUnica),
+      sim,
+      frontUrl
+    );
+    await createAndEmitSale(
+      await pages.get("operador", sim.usuarios.operadorCuenta.email, sim.passwordUnica),
+      sim,
+      frontUrl,
+      sim.flujo.ventaKg
+    );
+    await createSalidaAndCompleteTask(
+      await pages.get("jefe", sim.usuarios.jefeBodega.email, sim.passwordUnica),
+      await pages.get("operario", sim.usuarios.operario.email, sim.passwordUnica),
+      sim,
+      frontUrl
+    );
+    await createPaquete(
+      await pages.get("custodio", sim.usuarios.custodio.email, sim.passwordUnica),
+      sim,
+      frontUrl
+    );
+    await registerDelivery(
+      await pages.get("transportista", sim.usuarios.transportista.email, sim.passwordUnica),
+      sim,
+      frontUrl,
+      evidencePath,
+      false,
+      sim.flujo.motivoNoConforme
+    );
+  }
+}
+
+async function runOneSimulation(sim, opts) {
+  const { browserType, executablePath, monitor, frontUrl, catalogPath, timeoutMs, headed, configurador, evidencePath } = opts;
+  const steps = [
+    "login-configurador",
+    "setup-core",
+    "setup-usuarios",
+    "setup-admin-catalogo",
+    "ciclo-a",
+    "ciclo-b"
+  ];
+  monitor.setTotal(sim.id, steps.length);
+
+  const browser = await chromium.launch({
+    headless: !headed,
+    executablePath
+  });
+
+  const pages = new RolePages(browser, frontUrl, timeoutMs);
+  const runStep = async (label, fn) => {
+    monitor.begin(sim.id, `${browserType}: ${label}`);
+    await fn();
+    monitor.done(sim.id);
+  };
+
+  try {
+    await runInGate(setupFlowGate, async () => {
+      await runStep("login-configurador", async () => {
+        const p = await pages.get(
+          "config",
+          configurador.email,
+          configurador.password,
+          configurador.codigoEmpresa || ""
+        );
+        return p;
+      });
+      await sleep(2200);
+
+      await runStep("setup-core", async () => {
+        const p = await pages.get(
+          "config",
+          configurador.email,
+          configurador.password,
+          configurador.codigoEmpresa || ""
+        );
+        await setupCore(p, sim, frontUrl);
+      });
+      await sleep(2400);
+
+      await runStep("setup-usuarios", async () => {
+        await runInGate(setupUsersGate, async () => {
+          const p = await pages.get(
+            "config",
+            configurador.email,
+            configurador.password,
+            configurador.codigoEmpresa || ""
+          );
+          await setupUsers(p, sim, frontUrl);
+        });
+      });
+      await sleep(2500);
+
+      await runStep("setup-admin-catalogo", async () => {
+        const admin = await pages.get("admin", sim.usuarios.adminCuenta.email, sim.passwordUnica);
+        await setupMastersAndCatalog(admin, sim, frontUrl, catalogPath);
+      });
+    });
+
+    await runStep("ciclo-a", async () => {
+      await runCycleA(sim, pages, frontUrl, evidencePath);
+    });
+    await runStep("ciclo-b", async () => {
+      await runCycleB(sim, pages, frontUrl, evidencePath);
+    });
+    monitor.complete(sim.id);
+  } catch (error) {
+    monitor.fail(sim.id, error);
+    throw error;
+  } finally {
+    await pages.closeAll().catch(() => {});
+    await browser.close().catch(() => {});
+  }
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const scenario = readScenario();
+
+  const frontUrl = args.frontUrl || scenario.frontUrl || "http://localhost:3001";
+  const defaultDownloads = process.env.USERPROFILE
+    ? path.join(process.env.USERPROFILE, "Downloads")
+    : "";
+  const downloadsDir = args.downloadsDir || defaultDownloads;
+
+  if (!downloadsDir) {
+    throw new Error("Debes indicar --downloads con la carpeta de tus Excel.");
+  }
+
+  ensureFile(normalizePathFromFileUrl(downloadsDir), "carpeta downloads");
+  const evidencePath = ensureEvidenceImage();
+
+  const monitor = new Monitor(scenario.simulaciones);
+  monitor.startLoop();
+
+  try {
+    const jobs = scenario.simulaciones.map(async (sim) => {
+      const browserType = scenario.browserMap[sim.id];
+      const executablePath = DEFAULT_BROWSER_PATHS[browserType];
+      if (!executablePath) {
+        throw new Error(`No hay ruta de navegador para ${browserType} (${sim.id}).`);
+      }
+      ensureFile(executablePath, `navegador ${browserType}`);
+
+      const catalogPath = path.join(downloadsDir, sim.catalogoExcel);
+      ensureFile(catalogPath, `Excel de ${sim.id}`);
+      const meta = parseCatalogMeta(catalogPath);
+      console.log(`[${sim.id}] Excel OK -> hoja: ${meta.sheet}, filas: ${meta.rows}`);
+
+      return runOneSimulation(sim, {
+        browserType,
+        executablePath,
+        monitor,
+        frontUrl,
+        catalogPath,
+        timeoutMs: args.timeoutMs,
+        headed: args.headed,
+        configurador: scenario.configurador,
+        evidencePath
+      });
+    });
+
+    const results = await Promise.allSettled(jobs);
+    monitor.stopLoop();
+    const failures = results.filter((r) => r.status === "rejected");
+    if (failures.length > 0) {
+      const first = failures[0];
+      const reason = first.status === "rejected" ? first.reason : "Error desconocido";
+      console.error(
+        `\n❌ Simulaciones con error: ${failures.length}/${results.length}. Primer error:`,
+        reason?.stack || reason?.message || reason
+      );
+      process.exit(1);
+    }
+    console.log("\n✅ Simulaciones finalizadas.");
+  } catch (error) {
+    monitor.stopLoop();
+    console.error("\n❌ Error global:", error?.stack || error?.message || error);
+    process.exit(1);
+  }
+}
+
+main();
+
+
+
+
+
+

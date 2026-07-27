@@ -1,0 +1,16 @@
+{
+  "name": "polaria-ui-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Runner externo UI para simulaciones Polaria",
+  "type": "module",
+  "scripts": {
+    "run": "node run.mjs",
+    "run:headed": "node run.mjs --headed",
+    "help": "node run.mjs --help"
+  },
+  "dependencies": {
+    "playwright": "^1.62.0",
+    "xlsx": "^0.18.5"
+  }
+}

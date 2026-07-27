@@ -1,0 +1,268 @@
+{
+  "version": "1.0.0",
+  "frontUrl": "http://localhost:3001",
+  "configurador": {
+    "email": "configurador@polaria.tech",
+    "password": "Configurador_ti.321"
+  },
+  "browserMap": {
+    "andino": "chrome",
+    "marazul": "edge",
+    "aves": "opera"
+  },
+  "simulaciones": [
+    {
+      "id": "andino",
+      "nombre": "Frigorifico Andino",
+      "passwordUnica": "Andino#2026Sim",
+      "catalogoExcel": "Andino(1).xlsx",
+      "setup": {
+        "empresa": {
+          "razonSocial": "Frigorifico Andino SpA",
+          "telefono": "+57 300 111 0001"
+        },
+        "cuenta": {
+          "nombre": "Andino Operaciones"
+        },
+        "bodega": {
+          "nombre": "Bodega Frio Norte",
+          "capacidad": 48
+        }
+      },
+      "usuarios": {
+        "adminCuenta": {
+          "nombre": "Laura Admin Andino",
+          "email": "laura.admin@andino.demo"
+        },
+        "operadorCuenta": {
+          "nombre": "Carlos Operador Andino",
+          "email": "carlos.operador@andino.demo"
+        },
+        "adminBodega": {
+          "nombre": "Marta Admin Bodega",
+          "email": "marta.adminbodega@andino.demo"
+        },
+        "jefeBodega": {
+          "nombre": "Jorge Jefe Bodega",
+          "email": "jorge.jefe@andino.demo"
+        },
+        "custodio": {
+          "nombre": "Pedro Custodio",
+          "email": "pedro.custodio@andino.demo"
+        },
+        "operario": {
+          "nombre": "Ana Operaria",
+          "email": "ana.operaria@andino.demo"
+        },
+        "procesador": {
+          "nombre": "Luis Procesador",
+          "email": "luis.procesador@andino.demo"
+        },
+        "transportista": {
+          "nombre": "Diego Transportista",
+          "email": "diego.transportista@andino.demo"
+        }
+      },
+      "maestros": {
+        "proveedor": {
+          "nombre": "Carnes del Valle SAS",
+          "contacto": "Contacto Valle",
+          "telefono": "+57 310 222 1001",
+          "email": "ventas@carnesdelvalle.demo"
+        },
+        "cliente": {
+          "nombre": "Restaurantes Costa Ltda",
+          "nit": "900555111-2",
+          "telefono": "+57 310 333 2001"
+        },
+        "comprador": {
+          "nombre": "Comprador Costa Central",
+          "telefono": "+57 310 333 2002"
+        },
+        "camion": {
+          "placa": "AND123",
+          "capacidadKg": 3500,
+          "capacidadM3": 18,
+          "capacidadPallets": 10
+        }
+      },
+      "flujo": {
+        "compraKg": 200,
+        "recepcionTempC": "-18",
+        "recepcionKgA": 200,
+        "ventaKg": 50,
+        "recepcionKgB": 180,
+        "cicloB": "recepcion_diferencia"
+      }
+    },
+    {
+      "id": "marazul",
+      "nombre": "Mar Azul Frios",
+      "passwordUnica": "MarAzul#2026Sim",
+      "catalogoExcel": "Mar_Azul(1).xlsx",
+      "setup": {
+        "empresa": {
+          "razonSocial": "Mar Azul Frios SAS",
+          "telefono": "+57 301 400 1001"
+        },
+        "cuenta": {
+          "nombre": "Mar Azul Operativo"
+        },
+        "bodega": {
+          "nombre": "Camara Pacifico",
+          "capacidad": 36
+        }
+      },
+      "usuarios": {
+        "adminCuenta": {
+          "nombre": "Sofia Admin Marazul",
+          "email": "sofia.admin@marazul.demo"
+        },
+        "operadorCuenta": {
+          "nombre": "Andres Operador Marazul",
+          "email": "andres.operador@marazul.demo"
+        },
+        "adminBodega": {
+          "nombre": "Lucia Admin Bodega",
+          "email": "lucia.adminbodega@marazul.demo"
+        },
+        "jefeBodega": {
+          "nombre": "Ricardo Jefe Bodega",
+          "email": "ricardo.jefe@marazul.demo"
+        },
+        "custodio": {
+          "nombre": "Camila Custodio",
+          "email": "camila.custodio@marazul.demo"
+        },
+        "operario": {
+          "nombre": "Mateo Operario",
+          "email": "mateo.operario@marazul.demo"
+        },
+        "procesador": {
+          "nombre": "Valentina Procesador",
+          "email": "valentina.procesador@marazul.demo"
+        },
+        "transportista": {
+          "nombre": "Hector Transportista",
+          "email": "hector.transportista@marazul.demo"
+        }
+      },
+      "maestros": {
+        "proveedor": {
+          "nombre": "Pesca Buenaventura SA",
+          "contacto": "Contacto Puerto",
+          "telefono": "+57 315 500 3001",
+          "email": "compras@pescabuenaventura.demo"
+        },
+        "cliente": {
+          "nombre": "Hotel Caribe Gourmet",
+          "nit": "901222333-8",
+          "telefono": "+57 315 500 4001"
+        },
+        "comprador": {
+          "nombre": "Comprador Hotel Caribe",
+          "telefono": "+57 315 500 4002"
+        },
+        "camion": {
+          "placa": "MAZ456",
+          "capacidadKg": 2500,
+          "capacidadM3": 14,
+          "capacidadPallets": 8
+        }
+      },
+      "flujo": {
+        "compraKg": 150,
+        "recepcionTempC": "-2",
+        "recepcionKgA": 150,
+        "ventaKg": 40,
+        "recepcionKgB": 135,
+        "cicloB": "recepcion_diferencia"
+      }
+    },
+    {
+      "id": "aves",
+      "nombre": "Aves Doradas",
+      "passwordUnica": "AvesDoradas#2026Sim",
+      "catalogoExcel": "Aves_Dorada(1).xlsx",
+      "setup": {
+        "empresa": {
+          "razonSocial": "Aves Doradas SAS",
+          "telefono": "+57 302 700 1001"
+        },
+        "cuenta": {
+          "nombre": "Aves Doradas Central"
+        },
+        "bodega": {
+          "nombre": "Congelados Sabana",
+          "capacidad": 60
+        }
+      },
+      "usuarios": {
+        "adminCuenta": {
+          "nombre": "Paula Admin Aves",
+          "email": "paula.admin@avesdoradas.demo"
+        },
+        "operadorCuenta": {
+          "nombre": "Julian Operador Aves",
+          "email": "julian.operador@avesdoradas.demo"
+        },
+        "adminBodega": {
+          "nombre": "Nora Admin Bodega",
+          "email": "nora.adminbodega@avesdoradas.demo"
+        },
+        "jefeBodega": {
+          "nombre": "Tomas Jefe Bodega",
+          "email": "tomas.jefe@avesdoradas.demo"
+        },
+        "custodio": {
+          "nombre": "Elena Custodio",
+          "email": "elena.custodio@avesdoradas.demo"
+        },
+        "operario": {
+          "nombre": "Bruno Operario",
+          "email": "bruno.operario@avesdoradas.demo"
+        },
+        "procesador": {
+          "nombre": "Irene Procesador",
+          "email": "irene.procesador@avesdoradas.demo"
+        },
+        "transportista": {
+          "nombre": "Oscar Transportista",
+          "email": "oscar.transportista@avesdoradas.demo"
+        }
+      },
+      "maestros": {
+        "proveedor": {
+          "nombre": "Granja Los Alamos SAS",
+          "contacto": "Contacto Granja",
+          "telefono": "+57 318 600 5001",
+          "email": "pedidos@granjalosalamos.demo"
+        },
+        "cliente": {
+          "nombre": "Cadena Supermercados Norte",
+          "nit": "902444555-1",
+          "telefono": "+57 318 600 6001"
+        },
+        "comprador": {
+          "nombre": "Comprador Super Norte",
+          "telefono": "+57 318 600 6002"
+        },
+        "camion": {
+          "placa": "AVD789",
+          "capacidadKg": 5000,
+          "capacidadM3": 24,
+          "capacidadPallets": 14
+        }
+      },
+      "flujo": {
+        "compraKg": 400,
+        "recepcionTempC": "-18",
+        "recepcionKgA": 400,
+        "ventaKg": 120,
+        "recepcionKgB": 400,
+        "cicloB": "entrega_no_conforme",
+        "motivoNoConforme": "Cadena de frio interrumpida en ruta"
+      }
+    }
+  ]
+}
