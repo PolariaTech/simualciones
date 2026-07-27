@@ -630,6 +630,81 @@ async function waitForVisibleControls(scope, timeoutMs = 9_000) {
   return 0;
 }
 
+async function collectDialogFieldHints(scope) {
+  return scope
+    .evaluate(() => {
+      const hints = [];
+      const push = (kind, text, extra = "") => {
+        const value = String(text || "").replace(/\s+/g, " ").trim();
+        if (!value) return;
+        hints.push(extra ? `${kind}:${value}(${extra})` : `${kind}:${value}`);
+      };
+
+      for (const el of document.querySelectorAll("label")) {
+        push("label", el.textContent, el.getAttribute("for") || "");
+      }
+      for (const el of document.querySelectorAll("input, textarea, select")) {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        push(
+          el.tagName.toLowerCase(),
+          el.getAttribute("aria-label") || el.name || el.id || el.placeholder || "campo"
+        );
+      }
+      for (const el of document.querySelectorAll("[role='combobox']")) {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        push("combobox", el.getAttribute("aria-label") || el.textContent);
+      }
+      for (const el of document.querySelectorAll("button")) {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        push("button", el.textContent);
+      }
+      return hints.slice(0, 30);
+    })
+    .catch(() => []);
+}
+
+async function waitForVentaFormReady(scope, timeoutMs = 9_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const visibleControls = await countVisibleControls(scope);
+    if (visibleControls > 0) {
+      const markers = [
+        scope.getByLabel(/Cantidad \(kg\)/i),
+        scope.getByLabel(/Comprador/i),
+        scope.getByLabel(/Cliente/i),
+        scope.getByLabel(/Producto/i),
+        scope.getByRole("button", { name: /^Agregar$/i }),
+        scope.getByRole("button", { name: /Buscar Comprador/i }),
+        scope.getByRole("button", { name: /Buscar Producto/i })
+      ];
+      for (const locator of markers) {
+        if ((await locator.count()) === 0) continue;
+        const visible = await locator.first().isVisible().catch(() => false);
+        if (visible) return visibleControls;
+      }
+    }
+    await sleep(220);
+  }
+  return countVisibleControls(scope);
+}
+
+async function tryFillByLabels(scope, labelRegexes, value) {
+  for (const labelRx of labelRegexes) {
+    const field = scope.getByLabel(labelRx).first();
+    if ((await field.count()) === 0) continue;
+    try {
+      await fillByLabel(scope, labelRx, value);
+      return true;
+    } catch {
+      // try next label
+    }
+  }
+  return false;
+}
+
 async function selectFromPicker(page, searchButtonRx, preferText = "", options = {}) {
   const { strictPrefer = false, triggerTimeoutMs = 22000, pickerTimeoutMs = 20000 } = options;
   const triggerRegexes = Array.isArray(searchButtonRx) ? searchButtonRx : [searchButtonRx];
@@ -1345,7 +1420,7 @@ async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
   await operadorPage.getByRole("button", { name: /Nueva venta/i }).click();
   {
     const d = await activeDialog(operadorPage);
-    await waitForVisibleControls(d, 7_000);
+    await waitForVentaFormReady(d, 7_000);
 
     const buyerPickerRegexes = [/Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i];
     const buyerCandidates = [sim.maestros.comprador?.nombre, sim.maestros.cliente?.nombre].filter(Boolean);
@@ -1364,15 +1439,21 @@ async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
       }
     }
     if (!buyerSelected) {
-      buyerSelected = await tryFillByLabelValues(d, [/Comprador/i, /Cliente/i], buyerCandidates);
-    }
-    if (!buyerSelected) {
-      buyerSelected = await trySetByHints(d, ["comprador", "cliente"], buyerCandidates, false);
+      for (const candidate of buyerCandidates.length ? buyerCandidates : [""]) {
+        if (
+          await selectFieldByControl(operadorPage, d, [/Comprador/i, /Cliente/i], candidate, {
+            strictPrefer: Boolean(candidate)
+          })
+        ) {
+          buyerSelected = true;
+          break;
+        }
+      }
     }
     if (!buyerSelected) {
       const visibleControls = await countVisibleControls(d);
       if (visibleControls > 0) {
-        const fieldHints = await collectDialogFieldHints(d).catch(() => []);
+        const fieldHints = await collectDialogFieldHints(d);
         throw new Error(
           `No pude seleccionar comprador/cliente en Nueva venta. Picker=${buyerPickerError?.message || "sin detalle"} Campos visibles=${fieldHints.join(" || ")}`
         );
@@ -1393,12 +1474,12 @@ async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
       }
     }
     if (!productSelected) {
-      productSelected = await trySetByHints(d, ["producto", "sku", "item"], [""], true);
+      productSelected = await selectFieldByControl(operadorPage, d, [/Producto/i], "");
     }
     if (!productSelected) {
       const visibleControls = await countVisibleControls(d);
       if (visibleControls > 0) {
-        const fieldHints = await collectDialogFieldHints(d).catch(() => []);
+        const fieldHints = await collectDialogFieldHints(d);
         throw new Error(
           `No pude seleccionar producto en Nueva venta. Picker=${productPickerError?.message || "sin detalle"} Campos visibles=${fieldHints.join(" || ")}`
         );
@@ -1406,14 +1487,10 @@ async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
       console.log(`[${sim.id}] aviso: venta sin selector visible de producto; continúo.`);
     }
 
-    try {
-      await fillByLabel(d, /Cantidad \(kg\)/i, ventaKg);
-    } catch {
-      const quantitySet = await trySetByHints(d, ["cantidad", "kg", "peso"], [ventaKg], false);
-      if (!quantitySet) {
-        const fieldHints = await collectDialogFieldHints(d).catch(() => []);
-        throw new Error(`No pude definir cantidad de venta. Campos visibles=${fieldHints.join(" || ")}`);
-      }
+    const quantitySet = await tryFillByLabels(d, [/Cantidad \(kg\)/i, /Cantidad/i, /Peso/i, /kg/i], ventaKg);
+    if (!quantitySet) {
+      const fieldHints = await collectDialogFieldHints(d);
+      throw new Error(`No pude definir cantidad de venta. Campos visibles=${fieldHints.join(" || ")}`);
     }
 
     const addButton = d.getByRole("button", { name: /^Agregar$/i }).first();
@@ -1421,10 +1498,13 @@ async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
       await addButton.click();
     }
 
-    try {
-      await fillByLabel(d, /Observaciones/i, `Venta auto ${sim.id}`);
-    } catch {
-      await trySetByHints(d, ["observacion", "comentario", "nota"], [`Venta auto ${sim.id}`], false);
+    const notesSet = await tryFillByLabels(
+      d,
+      [/Observaciones/i, /Comentario/i, /Nota/i],
+      `Venta auto ${sim.id}`
+    );
+    if (!notesSet) {
+      console.log(`[${sim.id}] aviso: venta sin campo de observaciones visible; continúo.`);
     }
   }
   await submitModal(operadorPage, /Crear venta/i, false);
