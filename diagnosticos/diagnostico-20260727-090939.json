@@ -1,0 +1,365 @@
+{
+  "run": {
+    "startedAt": "2026-07-27T13:46:36.210Z",
+    "endedAt": "2026-07-27T14:09:39.458Z",
+    "frontUrl": "http://localhost:3001",
+    "downloadsDir": "C:\\Users\\Daniel\\Downloads",
+    "headed": true,
+    "timeoutMs": 70000,
+    "scenarioPath": "C:\\polaria-ui-runner\\scenarios\\polaria-simulaciones.json"
+  },
+  "summary": {
+    "total": 3,
+    "ok": 0,
+    "failed": 3
+  },
+  "simulations": [
+    {
+      "id": "andino",
+      "nombre": "Frigorifico Andino",
+      "browserType": "chrome",
+      "estado": "error",
+      "total": 6,
+      "ok": 4,
+      "pasoActual": "chrome: ciclo-a",
+      "startedAt": "2026-07-27T13:46:37.925Z",
+      "endedAt": "2026-07-27T13:56:35.938Z",
+      "error": "Error: No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta\n    at selectFromPicker (file:///C:/polaria-ui-runner/run.mjs:607:11)\n    at async createAndEmitSale (file:///C:/polaria-ui-runner/run.mjs:1163:5)\n    at async runCycleA (file:///C:/polaria-ui-runner/run.mjs:1282:3)\n    at async file:///C:/polaria-ui-runner/run.mjs:1454:7\n    at async runStep (file:///C:/polaria-ui-runner/run.mjs:1401:7)\n    at async runOneSimulation (file:///C:/polaria-ui-runner/run.mjs:1453:5)\n    at async Promise.allSettled (index 0)\n    at async main (file:///C:/polaria-ui-runner/run.mjs:1526:21)",
+      "pasos": [
+        {
+          "paso": "chrome: login-configurador",
+          "estado": "ok",
+          "startedAt": "2026-07-27T13:46:37.925Z",
+          "endedAt": "2026-07-27T13:46:54.740Z",
+          "error": null
+        },
+        {
+          "paso": "chrome: setup-core",
+          "estado": "ok",
+          "startedAt": "2026-07-27T13:47:00.067Z",
+          "endedAt": "2026-07-27T13:48:31.048Z",
+          "error": null
+        },
+        {
+          "paso": "chrome: setup-usuarios",
+          "estado": "ok",
+          "startedAt": "2026-07-27T13:48:36.824Z",
+          "endedAt": "2026-07-27T13:52:37.520Z",
+          "error": null
+        },
+        {
+          "paso": "chrome: setup-admin-catalogo",
+          "estado": "ok",
+          "startedAt": "2026-07-27T13:52:43.529Z",
+          "endedAt": "2026-07-27T13:53:20.306Z",
+          "error": null
+        },
+        {
+          "paso": "chrome: ciclo-a",
+          "estado": "error",
+          "startedAt": "2026-07-27T13:53:20.306Z",
+          "endedAt": "2026-07-27T13:56:35.938Z",
+          "error": "No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta"
+        }
+      ]
+    },
+    {
+      "id": "marazul",
+      "nombre": "Mar Azul Frios",
+      "browserType": "edge",
+      "estado": "error",
+      "total": 6,
+      "ok": 4,
+      "pasoActual": "edge: ciclo-a",
+      "startedAt": "2026-07-27T13:53:20.306Z",
+      "endedAt": "2026-07-27T14:01:48.118Z",
+      "error": "Error: No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta\n    at selectFromPicker (file:///C:/polaria-ui-runner/run.mjs:607:11)\n    at async createAndEmitSale (file:///C:/polaria-ui-runner/run.mjs:1163:5)\n    at async runCycleA (file:///C:/polaria-ui-runner/run.mjs:1282:3)\n    at async file:///C:/polaria-ui-runner/run.mjs:1454:7\n    at async runStep (file:///C:/polaria-ui-runner/run.mjs:1401:7)\n    at async runOneSimulation (file:///C:/polaria-ui-runner/run.mjs:1453:5)\n    at async Promise.allSettled (index 1)\n    at async main (file:///C:/polaria-ui-runner/run.mjs:1526:21)",
+      "pasos": [
+        {
+          "paso": "edge: login-configurador",
+          "estado": "ok",
+          "startedAt": "2026-07-27T13:53:20.306Z",
+          "endedAt": "2026-07-27T13:53:31.504Z",
+          "error": null
+        },
+        {
+          "paso": "edge: setup-core",
+          "estado": "ok",
+          "startedAt": "2026-07-27T13:53:36.799Z",
+          "endedAt": "2026-07-27T13:55:01.709Z",
+          "error": null
+        },
+        {
+          "paso": "edge: setup-usuarios",
+          "estado": "ok",
+          "startedAt": "2026-07-27T13:55:07.481Z",
+          "endedAt": "2026-07-27T13:59:27.934Z",
+          "error": null
+        },
+        {
+          "paso": "edge: setup-admin-catalogo",
+          "estado": "ok",
+          "startedAt": "2026-07-27T13:59:33.939Z",
+          "endedAt": "2026-07-27T14:00:07.861Z",
+          "error": null
+        },
+        {
+          "paso": "edge: ciclo-a",
+          "estado": "error",
+          "startedAt": "2026-07-27T14:00:07.861Z",
+          "endedAt": "2026-07-27T14:01:48.118Z",
+          "error": "No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta"
+        }
+      ]
+    },
+    {
+      "id": "aves",
+      "nombre": "Aves Doradas",
+      "browserType": "opera",
+      "estado": "error",
+      "total": 6,
+      "ok": 4,
+      "pasoActual": "opera: ciclo-a",
+      "startedAt": "2026-07-27T14:00:07.861Z",
+      "endedAt": "2026-07-27T14:09:37.703Z",
+      "error": "Error: No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta\n    at selectFromPicker (file:///C:/polaria-ui-runner/run.mjs:607:11)\n    at async createAndEmitSale (file:///C:/polaria-ui-runner/run.mjs:1163:5)\n    at async runCycleA (file:///C:/polaria-ui-runner/run.mjs:1282:3)\n    at async file:///C:/polaria-ui-runner/run.mjs:1454:7\n    at async runStep (file:///C:/polaria-ui-runner/run.mjs:1401:7)\n    at async runOneSimulation (file:///C:/polaria-ui-runner/run.mjs:1453:5)\n    at async Promise.allSettled (index 2)\n    at async main (file:///C:/polaria-ui-runner/run.mjs:1526:21)",
+      "pasos": [
+        {
+          "paso": "opera: login-configurador",
+          "estado": "ok",
+          "startedAt": "2026-07-27T14:00:07.861Z",
+          "endedAt": "2026-07-27T14:00:19.230Z",
+          "error": null
+        },
+        {
+          "paso": "opera: setup-core",
+          "estado": "ok",
+          "startedAt": "2026-07-27T14:00:24.521Z",
+          "endedAt": "2026-07-27T14:01:53.003Z",
+          "error": null
+        },
+        {
+          "paso": "opera: setup-usuarios",
+          "estado": "ok",
+          "startedAt": "2026-07-27T14:01:58.769Z",
+          "endedAt": "2026-07-27T14:05:57.935Z",
+          "error": null
+        },
+        {
+          "paso": "opera: setup-admin-catalogo",
+          "estado": "ok",
+          "startedAt": "2026-07-27T14:06:03.945Z",
+          "endedAt": "2026-07-27T14:06:38.608Z",
+          "error": null
+        },
+        {
+          "paso": "opera: ciclo-a",
+          "estado": "error",
+          "startedAt": "2026-07-27T14:06:38.608Z",
+          "endedAt": "2026-07-27T14:09:37.703Z",
+          "error": "No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "status": "rejected",
+      "reason": {}
+    },
+    {
+      "status": "rejected",
+      "reason": {}
+    },
+    {
+      "status": "rejected",
+      "reason": {}
+    }
+  ],
+  "globalError": null,
+  "events": [
+    {
+      "at": "2026-07-27T13:46:37.925Z",
+      "simId": "andino",
+      "tipo": "step_start",
+      "paso": "chrome: login-configurador"
+    },
+    {
+      "at": "2026-07-27T13:46:54.740Z",
+      "simId": "andino",
+      "tipo": "step_ok",
+      "paso": "chrome: login-configurador"
+    },
+    {
+      "at": "2026-07-27T13:47:00.067Z",
+      "simId": "andino",
+      "tipo": "step_start",
+      "paso": "chrome: setup-core"
+    },
+    {
+      "at": "2026-07-27T13:48:31.048Z",
+      "simId": "andino",
+      "tipo": "step_ok",
+      "paso": "chrome: setup-core"
+    },
+    {
+      "at": "2026-07-27T13:48:36.824Z",
+      "simId": "andino",
+      "tipo": "step_start",
+      "paso": "chrome: setup-usuarios"
+    },
+    {
+      "at": "2026-07-27T13:52:37.520Z",
+      "simId": "andino",
+      "tipo": "step_ok",
+      "paso": "chrome: setup-usuarios"
+    },
+    {
+      "at": "2026-07-27T13:52:43.529Z",
+      "simId": "andino",
+      "tipo": "step_start",
+      "paso": "chrome: setup-admin-catalogo"
+    },
+    {
+      "at": "2026-07-27T13:53:20.306Z",
+      "simId": "andino",
+      "tipo": "step_ok",
+      "paso": "chrome: setup-admin-catalogo"
+    },
+    {
+      "at": "2026-07-27T13:53:20.306Z",
+      "simId": "marazul",
+      "tipo": "step_start",
+      "paso": "edge: login-configurador"
+    },
+    {
+      "at": "2026-07-27T13:53:20.306Z",
+      "simId": "andino",
+      "tipo": "step_start",
+      "paso": "chrome: ciclo-a"
+    },
+    {
+      "at": "2026-07-27T13:53:31.504Z",
+      "simId": "marazul",
+      "tipo": "step_ok",
+      "paso": "edge: login-configurador"
+    },
+    {
+      "at": "2026-07-27T13:53:36.799Z",
+      "simId": "marazul",
+      "tipo": "step_start",
+      "paso": "edge: setup-core"
+    },
+    {
+      "at": "2026-07-27T13:55:01.709Z",
+      "simId": "marazul",
+      "tipo": "step_ok",
+      "paso": "edge: setup-core"
+    },
+    {
+      "at": "2026-07-27T13:55:07.481Z",
+      "simId": "marazul",
+      "tipo": "step_start",
+      "paso": "edge: setup-usuarios"
+    },
+    {
+      "at": "2026-07-27T13:56:35.938Z",
+      "simId": "andino",
+      "tipo": "step_error",
+      "paso": "chrome: ciclo-a",
+      "error": "No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta"
+    },
+    {
+      "at": "2026-07-27T13:59:27.934Z",
+      "simId": "marazul",
+      "tipo": "step_ok",
+      "paso": "edge: setup-usuarios"
+    },
+    {
+      "at": "2026-07-27T13:59:33.939Z",
+      "simId": "marazul",
+      "tipo": "step_start",
+      "paso": "edge: setup-admin-catalogo"
+    },
+    {
+      "at": "2026-07-27T14:00:07.861Z",
+      "simId": "marazul",
+      "tipo": "step_ok",
+      "paso": "edge: setup-admin-catalogo"
+    },
+    {
+      "at": "2026-07-27T14:00:07.861Z",
+      "simId": "aves",
+      "tipo": "step_start",
+      "paso": "opera: login-configurador"
+    },
+    {
+      "at": "2026-07-27T14:00:07.861Z",
+      "simId": "marazul",
+      "tipo": "step_start",
+      "paso": "edge: ciclo-a"
+    },
+    {
+      "at": "2026-07-27T14:00:19.230Z",
+      "simId": "aves",
+      "tipo": "step_ok",
+      "paso": "opera: login-configurador"
+    },
+    {
+      "at": "2026-07-27T14:00:24.521Z",
+      "simId": "aves",
+      "tipo": "step_start",
+      "paso": "opera: setup-core"
+    },
+    {
+      "at": "2026-07-27T14:01:48.118Z",
+      "simId": "marazul",
+      "tipo": "step_error",
+      "paso": "edge: ciclo-a",
+      "error": "No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta"
+    },
+    {
+      "at": "2026-07-27T14:01:53.003Z",
+      "simId": "aves",
+      "tipo": "step_ok",
+      "paso": "opera: setup-core"
+    },
+    {
+      "at": "2026-07-27T14:01:58.769Z",
+      "simId": "aves",
+      "tipo": "step_start",
+      "paso": "opera: setup-usuarios"
+    },
+    {
+      "at": "2026-07-27T14:05:57.935Z",
+      "simId": "aves",
+      "tipo": "step_ok",
+      "paso": "opera: setup-usuarios"
+    },
+    {
+      "at": "2026-07-27T14:06:03.945Z",
+      "simId": "aves",
+      "tipo": "step_start",
+      "paso": "opera: setup-admin-catalogo"
+    },
+    {
+      "at": "2026-07-27T14:06:38.608Z",
+      "simId": "aves",
+      "tipo": "step_ok",
+      "paso": "opera: setup-admin-catalogo"
+    },
+    {
+      "at": "2026-07-27T14:06:38.608Z",
+      "simId": "aves",
+      "tipo": "step_start",
+      "paso": "opera: ciclo-a"
+    },
+    {
+      "at": "2026-07-27T14:09:37.703Z",
+      "simId": "aves",
+      "tipo": "step_error",
+      "paso": "opera: ciclo-a",
+      "error": "No encontré botón de picker /Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i. URL=http://localhost:3001/dashboard/ventas/ordenes Botones visibles=Mateo IA | Cerrar sesión | Nueva venta | Cerrar | Cancelar | Crear venta"
+    }
+  ]
+}
