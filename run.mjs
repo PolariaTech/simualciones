@@ -9,6 +9,7 @@ import { chromium } from "playwright";
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_PATH = path.join(ROOT, "scenarios", "polaria-simulaciones.json");
 const EVIDENCE_PATH = path.join(ROOT, "evidencia-entrega.png");
+const DIAGNOSTICS_DIR = path.join(ROOT, "diagnosticos");
 
 const DEFAULT_BROWSER_PATHS = {
   opera: "C:\\Program Files\\Opera GX\\opera.exe",
@@ -98,6 +99,10 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function formatRegexList(regexes) {
+  return regexes.map((rx) => String(rx)).join(", ");
+}
+
 function rxContains(value) {
   return new RegExp(escapeRegExp(value), "i");
 }
@@ -132,6 +137,188 @@ function sleep(ms) {
   const scaled = Math.ceil(Math.max(0, ms) * SLOW_FACTOR);
   return new Promise((resolve) => setTimeout(resolve, scaled));
 }
+
+
+const RUN_DIAG = {
+  startedAt: new Date().toISOString(),
+  meta: {},
+  sims: new Map(),
+  events: [],
+  finalized: false,
+
+  setMeta(meta) {
+    this.meta = meta || {};
+  },
+
+  registerSimulation(sim, browserType) {
+    if (!sim || !sim.id) return;
+    if (this.sims.has(sim.id)) return;
+    this.sims.set(sim.id, {
+      id: sim.id,
+      nombre: sim.nombre || sim.id,
+      browserType: browserType || "desconocido",
+      estado: "pendiente",
+      total: 0,
+      ok: 0,
+      pasoActual: "-",
+      startedAt: null,
+      endedAt: null,
+      error: null,
+      pasos: []
+    });
+  },
+
+  setTotal(simId, total) {
+    const s = this.sims.get(simId);
+    if (!s) return;
+    s.total = total;
+  },
+
+  stepStart(simId, paso) {
+    const s = this.sims.get(simId);
+    if (!s) return;
+    const now = new Date().toISOString();
+    if (!s.startedAt) s.startedAt = now;
+    s.estado = "ejecutando";
+    s.pasoActual = paso;
+    s.pasos.push({ paso, estado: "ejecutando", startedAt: now, endedAt: null, error: null });
+    this.events.push({ at: now, simId, tipo: "step_start", paso });
+  },
+
+  stepOk(simId, paso) {
+    const s = this.sims.get(simId);
+    if (!s) return;
+    const now = new Date().toISOString();
+    s.ok += 1;
+    for (let i = s.pasos.length - 1; i >= 0; i -= 1) {
+      if (s.pasos[i].paso === paso && s.pasos[i].estado === "ejecutando") {
+        s.pasos[i].estado = "ok";
+        s.pasos[i].endedAt = now;
+        break;
+      }
+    }
+    this.events.push({ at: now, simId, tipo: "step_ok", paso });
+  },
+
+  stepError(simId, paso, error) {
+    const s = this.sims.get(simId);
+    if (!s) return;
+    const now = new Date().toISOString();
+    const msg = error?.message || String(error || "error");
+    for (let i = s.pasos.length - 1; i >= 0; i -= 1) {
+      if (s.pasos[i].paso === paso && s.pasos[i].estado === "ejecutando") {
+        s.pasos[i].estado = "error";
+        s.pasos[i].endedAt = now;
+        s.pasos[i].error = msg;
+        break;
+      }
+    }
+    this.events.push({ at: now, simId, tipo: "step_error", paso, error: msg });
+  },
+
+  completeSimulation(simId) {
+    const s = this.sims.get(simId);
+    if (!s) return;
+    s.estado = "ok";
+    s.pasoActual = "finalizado";
+    s.endedAt = new Date().toISOString();
+  },
+
+  failSimulation(simId, error) {
+    const s = this.sims.get(simId);
+    if (!s) return;
+    s.estado = "error";
+    s.error = error?.stack || error?.message || String(error || "error");
+    s.endedAt = new Date().toISOString();
+  },
+
+  writeFinal(results, globalError) {
+    if (this.finalized) return null;
+    this.finalized = true;
+
+    fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true });
+
+    const now = new Date();
+    const stamp =
+      String(now.getFullYear()) +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      String(now.getDate()).padStart(2, "0") + "-" +
+      String(now.getHours()).padStart(2, "0") +
+      String(now.getMinutes()).padStart(2, "0") +
+      String(now.getSeconds()).padStart(2, "0");
+
+    const endedAt = new Date().toISOString();
+    const sims = [...this.sims.values()];
+    const payload = {
+      run: {
+        startedAt: this.startedAt,
+        endedAt,
+        frontUrl: this.meta.frontUrl,
+        downloadsDir: this.meta.downloadsDir,
+        headed: this.meta.headed,
+        timeoutMs: this.meta.timeoutMs,
+        scenarioPath: this.meta.scenarioPath
+      },
+      summary: {
+        total: sims.length,
+        ok: sims.filter((x) => x.estado === "ok").length,
+        failed: sims.filter((x) => x.estado === "error").length
+      },
+      simulations: sims,
+      results: results || [],
+      globalError: globalError?.stack || globalError?.message || (globalError ? String(globalError) : null),
+      events: this.events
+    };
+
+    const md = [];
+    md.push("# Diagnóstico de ejecución - Polaria UI Runner");
+    md.push("");
+    md.push("## Resumen");
+    md.push("");
+    md.push("- Inicio: " + payload.run.startedAt);
+    md.push("- Fin: " + payload.run.endedAt);
+    md.push("- Frontend: " + (payload.run.frontUrl || "-"));
+    md.push("- Descargas: " + (payload.run.downloadsDir || "-"));
+    md.push("");
+    md.push("| Simulación | Navegador | Estado | Progreso | Paso actual |");
+    md.push("|---|---|---|---:|---|");
+    for (const s of sims) {
+      md.push("| " + s.id + " | " + s.browserType + " | " + s.estado + " | " + s.ok + "/" + (s.total || "?") + " | " + s.pasoActual + " |");
+    }
+    md.push("");
+
+    for (const s of sims) {
+      md.push("## " + s.id + " (" + s.nombre + ")");
+      md.push("");
+      md.push("- Estado final: " + s.estado);
+      md.push("- Inicio: " + (s.startedAt || "-"));
+      md.push("- Fin: " + (s.endedAt || "-"));
+      if (s.error) md.push("- Error final: " + s.error.replace(/\n/g, " "));
+      md.push("");
+      md.push("| Paso | Estado | Error |");
+      md.push("|---|---|---|");
+      for (const p of s.pasos) {
+        md.push("| " + p.paso + " | " + p.estado + " | " + (p.error || "") + " |");
+      }
+      md.push("");
+    }
+
+    if (payload.globalError) {
+      md.push("## Error global");
+      md.push("");
+      md.push("~~~text");
+      md.push(payload.globalError);
+      md.push("~~~");
+      md.push("");
+    }
+
+    const mdPath = path.join(DIAGNOSTICS_DIR, "diagnostico-" + stamp + ".md");
+    const jsonPath = path.join(DIAGNOSTICS_DIR, "diagnostico-" + stamp + ".json");
+    fs.writeFileSync(mdPath, md.join("\n"), "utf8");
+    fs.writeFileSync(jsonPath, JSON.stringify(payload, null, 2), "utf8");
+    return { mdPath, jsonPath };
+  }
+};
 
 const setupUsersGate = {
   chain: Promise.resolve()
@@ -410,13 +597,19 @@ async function selectOptionLike(selectLocator, textNeedle) {
   return false;
 }
 
+
 async function selectFromPicker(page, searchButtonRx, preferText = "", options = {}) {
-  const { strictPrefer = false } = options;
-  const exists = await clickButtonByName(page, [searchButtonRx], 18_000);
+  const { strictPrefer = false, triggerTimeoutMs = 22000, pickerTimeoutMs = 20000 } = options;
+  const triggerRegexes = Array.isArray(searchButtonRx) ? searchButtonRx : [searchButtonRx];
+  const exists = await clickButtonByName(page, triggerRegexes, triggerTimeoutMs);
   if (!exists) {
-    throw new Error(`No encontré botón de picker ${searchButtonRx}`);
+    const labels = await collectVisibleButtonLabels(page);
+    throw new Error(
+      "No encontré botón de picker " + formatRegexList(triggerRegexes) + ". URL=" + page.url() + " Botones visibles=" + labels.join(" | ")
+    );
   }
-  const picker = await activeDialog(page, 12_000);
+
+  const picker = await activeDialog(page, 12000);
 
   const clickFirstVisible = async (locator) => {
     const count = await locator.count();
@@ -454,7 +647,7 @@ async function selectFromPicker(page, searchButtonRx, preferText = "", options =
         row.getAttribute("aria-label").catch(() => ""),
         row.textContent().catch(() => "")
       ]);
-      const haystack = normalizeText(`${aria || ""} ${txt || ""}`);
+      const haystack = normalizeText((aria || "") + " " + (txt || ""));
       if (haystack.includes(needle)) {
         await row.click();
         return;
@@ -462,24 +655,35 @@ async function selectFromPicker(page, searchButtonRx, preferText = "", options =
     }
 
     if (strictPrefer) {
-      throw new Error(`No encontré opción "${preferText}" en picker ${searchButtonRx}`);
+      throw new Error('No encontré opción "' + preferText + '" en picker ' + formatRegexList(triggerRegexes));
     }
   }
 
-  const row = picker.locator('tr[role="button"]').first();
-  if ((await row.count()) > 0) {
-    await row.click();
-    return;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < pickerTimeoutMs) {
+    const rowCount = await picker.locator('tr[role="button"]').count();
+    if (rowCount > 0) {
+      await picker.locator('tr[role="button"]').first().click();
+      return;
+    }
+    const cardCount = await picker.getByRole("button", { name: /Seleccionar/i }).count();
+    if (cardCount > 0) {
+      await picker.getByRole("button", { name: /Seleccionar/i }).first().click();
+      return;
+    }
+    const empty = await picker
+      .getByText(/sin resultados|sin datos|no hay registros|no hay datos/i)
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (empty) break;
+    await sleep(260);
   }
 
-  const slotOrCard = picker.getByRole("button", { name: /Seleccionar/i }).first();
-  if ((await slotOrCard.count()) > 0) {
-    await slotOrCard.click();
-    return;
-  }
-
-  throw new Error("No hay filas ni tarjetas seleccionables en el picker.");
+  const preview = ((await picker.textContent().catch(() => "")) || "").replace(/\s+/g, " ").trim().slice(0, 220);
+  throw new Error("No hay filas ni tarjetas seleccionables en el picker. Contexto=" + preview);
 }
+
 
 async function submitModal(page, submitRx, allowDuplicate = true) {
   return runInGate(writeOpsGate, async () => {
@@ -956,8 +1160,12 @@ async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
   await operadorPage.getByRole("button", { name: /Nueva venta/i }).click();
   {
     const d = await activeDialog(operadorPage);
-    await selectFromPicker(operadorPage, /Buscar Comprador/i, sim.maestros.comprador.nombre);
-    await selectFromPicker(operadorPage, /Buscar Producto/i, "");
+    await selectFromPicker(
+      operadorPage,
+      [/Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i],
+      sim.maestros.comprador.nombre
+    );
+    await selectFromPicker(operadorPage, [/Buscar Producto/i, /Seleccionar Producto/i, /Producto/i], "");
     await fillByLabel(d, /Cantidad \(kg\)/i, ventaKg);
     await d.getByRole("button", { name: /^Agregar$/i }).click();
     await fillByLabel(d, /Observaciones/i, `Venta auto ${sim.id}`);
@@ -1176,6 +1384,7 @@ async function runOneSimulation(sim, opts) {
     "ciclo-b"
   ];
   monitor.setTotal(sim.id, steps.length);
+  RUN_DIAG.setTotal(sim.id, steps.length);
 
   const browser = await chromium.launch({
     headless: !headed,
@@ -1185,9 +1394,17 @@ async function runOneSimulation(sim, opts) {
 
   const pages = new RolePages(browser, frontUrl, timeoutMs);
   const runStep = async (label, fn) => {
-    monitor.begin(sim.id, `${browserType}: ${label}`);
-    await fn();
-    monitor.done(sim.id);
+    const stepName = browserType + ": " + label;
+    monitor.begin(sim.id, stepName);
+    RUN_DIAG.stepStart(sim.id, stepName);
+    try {
+      await fn();
+      monitor.done(sim.id);
+      RUN_DIAG.stepOk(sim.id, stepName);
+    } catch (error) {
+      RUN_DIAG.stepError(sim.id, stepName, error);
+      throw error;
+    }
   };
 
   try {
@@ -1240,8 +1457,10 @@ async function runOneSimulation(sim, opts) {
       await runCycleB(sim, pages, frontUrl, evidencePath);
     });
     monitor.complete(sim.id);
+    RUN_DIAG.completeSimulation(sim.id);
   } catch (error) {
     monitor.fail(sim.id, error);
+    RUN_DIAG.failSimulation(sim.id, error);
     throw error;
   } finally {
     await pages.closeAll().catch(() => {});
@@ -1267,6 +1486,13 @@ async function main() {
   const evidencePath = ensureEvidenceImage();
 
   const monitor = new Monitor(scenario.simulaciones);
+  RUN_DIAG.setMeta({
+    frontUrl,
+    downloadsDir,
+    headed: args.headed,
+    timeoutMs: args.timeoutMs,
+    scenarioPath: SCENARIO_PATH
+  });
   monitor.startLoop();
 
   try {
@@ -1282,6 +1508,7 @@ async function main() {
       ensureFile(catalogPath, `Excel de ${sim.id}`);
       const meta = parseCatalogMeta(catalogPath);
       console.log(`[${sim.id}] Excel OK -> hoja: ${meta.sheet}, filas: ${meta.rows}`);
+      RUN_DIAG.registerSimulation(sim, browserType);
 
       return runOneSimulation(sim, {
         browserType,
@@ -1298,6 +1525,11 @@ async function main() {
 
     const results = await Promise.allSettled(jobs);
     monitor.stopLoop();
+    const reportFiles = RUN_DIAG.writeFinal(results, null);
+    if (reportFiles) {
+      console.log("[diagnostico] Markdown: " + reportFiles.mdPath);
+      console.log("[diagnostico] JSON: " + reportFiles.jsonPath);
+    }
     const failures = results.filter((r) => r.status === "rejected");
     if (failures.length > 0) {
       const first = failures[0];
@@ -1311,6 +1543,11 @@ async function main() {
     console.log("\n✅ Simulaciones finalizadas.");
   } catch (error) {
     monitor.stopLoop();
+    const reportFiles = RUN_DIAG.writeFinal([], error);
+    if (reportFiles) {
+      console.log("[diagnostico] Markdown: " + reportFiles.mdPath);
+      console.log("[diagnostico] JSON: " + reportFiles.jsonPath);
+    }
     console.error("\n❌ Error global:", error?.stack || error?.message || error);
     process.exit(1);
   }
