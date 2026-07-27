@@ -684,6 +684,159 @@ async function selectFromPicker(page, searchButtonRx, preferText = "", options =
   throw new Error("No hay filas ni tarjetas seleccionables en el picker. Contexto=" + preview);
 }
 
+async function hasButtonByName(scope, regexes, timeoutMs = 3_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    for (const rx of regexes) {
+      const btn = scope.getByRole("button", { name: rx }).first();
+      if ((await btn.count()) === 0) continue;
+      const visible = await btn.isVisible().catch(() => false);
+      if (!visible) continue;
+      const disabled = await btn.isDisabled().catch(() => false);
+      if (disabled) continue;
+      return true;
+    }
+    await sleep(220);
+  }
+  return false;
+}
+
+async function collectControlHints(scope) {
+  return scope
+    .evaluate(() => {
+      const hints = [];
+      const push = (kind, text) => {
+        const value = String(text || "").replace(/\s+/g, " ").trim();
+        if (value) hints.push(`${kind}:${value}`);
+      };
+
+      for (const el of document.querySelectorAll("label")) push("label", el.textContent);
+      for (const el of document.querySelectorAll("select")) {
+        push("select", el.getAttribute("aria-label") || el.name || el.id || "select");
+      }
+      for (const el of document.querySelectorAll("[role='combobox']")) {
+        push("combobox", el.getAttribute("aria-label") || el.textContent);
+      }
+      for (const el of document.querySelectorAll("button")) {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        push("button", el.textContent);
+      }
+      return hints.slice(0, 25);
+    })
+    .catch(() => []);
+}
+
+async function selectFirstVisibleOption(selectLocator) {
+  const options = selectLocator.locator("option");
+  const count = await options.count();
+  for (let i = 0; i < count; i += 1) {
+    const option = options.nth(i);
+    const value = await option.getAttribute("value").catch(() => "");
+    const text = ((await option.textContent()) || "").trim();
+    if (!value && !text) continue;
+    if (/seleccion|elige|choose/i.test(text)) continue;
+    if (value) {
+      await selectLocator.selectOption(value);
+      return true;
+    }
+  }
+  return false;
+}
+
+async function pickListboxOption(page, preferText = "") {
+  const listbox = page.getByRole("listbox").last();
+  if ((await listbox.count()) === 0) return false;
+
+  if (preferText) {
+    const byName = listbox.getByRole("option", { name: rxContains(preferText) }).first();
+    if ((await byName.count()) > 0) {
+      await byName.click();
+      return true;
+    }
+    const count = await listbox.getByRole("option").count();
+    const needle = normalizeText(preferText);
+    for (let i = 0; i < count; i += 1) {
+      const option = listbox.getByRole("option").nth(i);
+      const text = normalizeText((await option.textContent().catch(() => "")) || "");
+      if (text.includes(needle)) {
+        await option.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  const firstOption = listbox.getByRole("option").first();
+  if ((await firstOption.count()) > 0) {
+    await firstOption.click();
+    return true;
+  }
+  return false;
+}
+
+async function selectComboboxByLabel(page, scope, labelRx, preferText = "") {
+  const combobox = scope.getByRole("combobox", { name: labelRx }).first();
+  if ((await combobox.count()) === 0) return false;
+  await combobox.click();
+  await sleep(220);
+  return pickListboxOption(page, preferText);
+}
+
+async function selectFieldByControl(page, scope, labelRegexes, preferText = "", options = {}) {
+  const { strictPrefer = false } = options;
+  const labels = Array.isArray(labelRegexes) ? labelRegexes : [labelRegexes];
+
+  for (const labelRx of labels) {
+    const byLabel = scope.getByLabel(labelRx).first();
+    if ((await byLabel.count()) > 0) {
+      const tag = await byLabel.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
+      if (tag === "select") {
+        if (preferText) {
+          const matched = await selectOptionLike(byLabel, preferText);
+          if (matched) return true;
+          if (strictPrefer) return false;
+        }
+        if (await selectFirstVisibleOption(byLabel)) return true;
+        continue;
+      }
+
+      await byLabel.click().catch(() => {});
+      await sleep(220);
+      if (await pickListboxOption(page, preferText)) return true;
+      if (!preferText && (await selectFirstVisibleOption(byLabel))) return true;
+    }
+
+    if (await selectComboboxByLabel(page, scope, labelRx, preferText)) return true;
+  }
+
+  return false;
+}
+
+async function selectFieldWithPickerFallback(page, scope, options = {}) {
+  const {
+    fieldLabel = "campo",
+    pickerRegexes = [],
+    labelRegexes = [],
+    preferText = "",
+    strictPrefer = false
+  } = options;
+  const triggerRegexes = Array.isArray(pickerRegexes) ? pickerRegexes : [pickerRegexes];
+  const controlLabels = Array.isArray(labelRegexes) ? labelRegexes : [labelRegexes];
+
+  if (await hasButtonByName(page, triggerRegexes, 4_000)) {
+    return selectFromPicker(page, triggerRegexes, preferText, { strictPrefer });
+  }
+
+  const selected = await selectFieldByControl(page, scope, controlLabels, preferText, { strictPrefer });
+  if (selected) return;
+
+  const hints = await collectControlHints(scope);
+  throw new Error(
+    `No pude seleccionar ${fieldLabel}. Sin picker (${formatRegexList(triggerRegexes)}) ni control directo (${formatRegexList(controlLabels)}). Hints=${hints.join(" | ")}`
+  );
+}
+
 
 async function submitModal(page, submitRx, allowDuplicate = true) {
   return runInGate(writeOpsGate, async () => {
@@ -1160,12 +1313,18 @@ async function createAndEmitSale(operadorPage, sim, frontUrl, ventaKg) {
   await operadorPage.getByRole("button", { name: /Nueva venta/i }).click();
   {
     const d = await activeDialog(operadorPage);
-    await selectFromPicker(
-      operadorPage,
-      [/Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i],
-      sim.maestros.comprador.nombre
-    );
-    await selectFromPicker(operadorPage, [/Buscar Producto/i, /Seleccionar Producto/i, /Producto/i], "");
+    await selectFieldWithPickerFallback(operadorPage, d, {
+      fieldLabel: "comprador",
+      pickerRegexes: [/Buscar Comprador/i, /Seleccionar Comprador/i, /Buscar Cliente/i, /Comprador/i],
+      labelRegexes: [/Comprador/i, /Cliente/i],
+      preferText: sim.maestros.comprador.nombre
+    });
+    await selectFieldWithPickerFallback(operadorPage, d, {
+      fieldLabel: "producto",
+      pickerRegexes: [/Buscar Producto/i, /Seleccionar Producto/i, /Producto/i],
+      labelRegexes: [/Producto/i],
+      preferText: ""
+    });
     await fillByLabel(d, /Cantidad \(kg\)/i, ventaKg);
     await d.getByRole("button", { name: /^Agregar$/i }).click();
     await fillByLabel(d, /Observaciones/i, `Venta auto ${sim.id}`);
